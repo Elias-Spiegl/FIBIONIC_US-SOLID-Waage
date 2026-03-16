@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fibionic-us-solid-scale"
+version = "0.1.0"
+description = "Desktop-App zum Einlesen einer US-Solid-Waage und Schreiben stabiler Messwerte in Excel."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "PySide6>=6.10,<7",
+  "pyserial>=3.5,<4",
+  "xlwings>=0.33,<0.34",
+]
+
+[project.scripts]
+fibionic-scale = "fibionic_scale_app.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

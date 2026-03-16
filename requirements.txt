@@ -1,0 +1,4 @@
+openpyxl>=3.1,<4
+PySide6>=6.10,<7
+pyserial>=3.5,<4
+xlwings>=0.33,<0.34
