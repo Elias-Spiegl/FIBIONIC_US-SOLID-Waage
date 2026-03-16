@@ -91,7 +91,25 @@ def normalize_workbook_path(path_text: str) -> Path:
     if path.suffix.lower() != ".xlsx":
         raise ValueError("Bitte eine .xlsx-Datei verwenden.")
 
+    blocked_reason = workbook_path_block_reason(path)
+    if blocked_reason:
+        raise ValueError(blocked_reason)
+
     return path
+
+
+def workbook_path_block_reason(path: Path) -> str | None:
+    normalized = path.expanduser()
+    if sys.platform.startswith("win") and _looks_like_onedrive_path(normalized):
+        return (
+            "OneDrive-Dateien werden unter Windows im Logger nicht direkt unterstützt. "
+            "Bitte eine lokale Excel-Datei außerhalb von OneDrive verwenden und später synchronisieren."
+        )
+    return None
+
+
+def _looks_like_onedrive_path(path: Path) -> bool:
+    return any("onedrive" in part.lower() for part in path.parts)
 
 
 def column_name_to_index(column: str) -> int:

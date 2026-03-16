@@ -26,7 +26,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .excel_writer import EXCEL_MODE_AUTO, ExcelSession, build_cell_ref, scan_direction_options
+from .excel_writer import (
+    EXCEL_MODE_AUTO,
+    ExcelSession,
+    build_cell_ref,
+    scan_direction_options,
+    workbook_path_block_reason,
+)
 from .models import ExcelSettings, FLOW_DOWN, SerialSettings
 from .serial_io import (
     SIM_PROFILE_STABLE,
@@ -169,6 +175,7 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_scale_box(self) -> QGroupBox:
         box = QGroupBox("Quelle")
         layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(12)
 
         self.connection_setup_panel = QWidget()
@@ -261,6 +268,7 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_capture_box(self) -> QGroupBox:
         box = QGroupBox("Messwerte")
         layout = QGridLayout(box)
+        layout.setContentsMargins(16, 18, 16, 16)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(8)
 
@@ -291,6 +299,7 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_excel_box(self) -> QGroupBox:
         box = QGroupBox("Excel")
         layout = QGridLayout(box)
+        layout.setContentsMargins(16, 18, 16, 16)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(8)
 
@@ -411,7 +420,15 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_monitor_box(self) -> QGroupBox:
         box = QGroupBox("Verlauf")
         layout = QVBoxLayout(box)
+        layout.setContentsMargins(16, 18, 16, 16)
         layout.setSpacing(10)
+
+        controls_row = QHBoxLayout()
+        controls_row.setContentsMargins(0, 0, 0, 0)
+        controls_row.addStretch(1)
+        self.clear_log_button = self._soft_button("Verlauf löschen", self._clear_log_history)
+        controls_row.addWidget(self.clear_log_button, 0)
+        layout.addLayout(controls_row)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -777,6 +794,11 @@ class ScaleLoggerWindow(QMainWindow):
             "Excel-Datei (*.xlsx)",
         )
         if not path:
+            return
+
+        blocked_reason = workbook_path_block_reason(Path(path))
+        if blocked_reason:
+            QMessageBox.warning(self, "Excel-Datei", blocked_reason)
             return
 
         self.excel_path_edit.setText(path)
@@ -1368,6 +1390,9 @@ class ScaleLoggerWindow(QMainWindow):
 
     def _log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
+
+    def _clear_log_history(self) -> None:
+        self.log_view.clear()
 
     def _load_settings(self) -> None:
         data = self.settings_store.load()

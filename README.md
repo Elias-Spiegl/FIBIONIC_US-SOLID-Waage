@@ -228,6 +228,17 @@ Prüfen:
 - ist die Datei lokal erreichbar?
 - ist die Datei im lokalen Desktop-Excel geöffnet, wenn Live-Schreiben gewünscht ist?
 
+### OneDrive unter Windows
+
+Für den Windows-Logger bitte keine `.xlsx` direkt aus einem OneDrive-Ordner verwenden.
+
+Empfohlener Ablauf:
+
+- lokal außerhalb von OneDrive loggen
+- Datei nach dem Logging oder in einem separaten Schritt synchronisieren
+
+Die App blockiert OneDrive-Dateien unter Windows bewusst mit einer klaren Meldung, weil das Schreiben dort in der Praxis oft von OneDrive oder Excel gesperrt wird.
+
 ## Windows-`.exe` bauen
 
 Für den späteren Einsatz auf Windows:
