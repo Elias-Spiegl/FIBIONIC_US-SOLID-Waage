@@ -218,3 +218,7 @@ ehthumbs.db
 Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+
+# Local app state / test files
+.fibionic-scale/
+excel-test-datei.xlsx

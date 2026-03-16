@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import ExcelSettings
+from .models import ExcelSettings, FLOW_DOWN, FLOW_RIGHT
 
 EXCEL_MODE_AUTO = "auto"
 EXCEL_MODE_FILE = "file"
@@ -42,6 +42,20 @@ def normalize_excel_mode(mode: str) -> str:
     return normalized
 
 
+def normalize_scan_direction(direction: str) -> str:
+    normalized = (direction or FLOW_DOWN).strip().lower()
+    if normalized not in {FLOW_DOWN, FLOW_RIGHT}:
+        raise ValueError("Die Excel-Richtung muss 'down' oder 'right' sein.")
+    return normalized
+
+
+def scan_direction_options() -> list[tuple[str, str]]:
+    return [
+        (FLOW_DOWN, "Oben nach unten"),
+        (FLOW_RIGHT, "Links nach rechts"),
+    ]
+
+
 def current_platform_label() -> str:
     if sys.platform == "darwin":
         return "macOS"
@@ -50,30 +64,12 @@ def current_platform_label() -> str:
     return sys.platform
 
 
-def excel_mode_options() -> list[tuple[str, str]]:
-    platform_name = current_platform_label()
-    return [
-        (EXCEL_MODE_AUTO, f"Auto ({platform_name})"),
-        (EXCEL_MODE_FILE, "Datei-Modus (.xlsx)"),
-        (EXCEL_MODE_LIVE, "Live-Modus (offenes Excel)"),
-    ]
-
-
-def mode_label(mode: str) -> str:
-    normalized = normalize_excel_mode(mode)
-    if normalized == EXCEL_MODE_AUTO:
-        return "Auto"
-    if normalized == EXCEL_MODE_FILE:
-        return "Datei"
-    return "Live"
-
-
 def backend_label(backend: str) -> str:
     normalized = normalize_excel_mode(backend)
     if normalized == EXCEL_MODE_FILE:
-        return "Datei-Writer (openpyxl)"
+        return "Datei-Writer"
     if normalized == EXCEL_MODE_LIVE:
-        return "Live-Writer (Excel/xlwings)"
+        return "Live-Writer"
     return "Auto"
 
 
@@ -82,15 +78,6 @@ def live_backend_supported() -> bool:
         return False
 
     return importlib.util.find_spec("xlwings") is not None
-
-
-def live_backend_status_text() -> str:
-    platform_name = current_platform_label()
-    if sys.platform not in {"darwin", "win32"}:
-        return f"{platform_name}: Live-Modus wird nur auf macOS und Windows unterstuetzt."
-    if live_backend_supported():
-        return f"{platform_name}: Live-Modus ueber die lokal installierte Excel-App verfuegbar."
-    return f"{platform_name}: Fuer den Live-Modus fehlt derzeit das Paket 'xlwings'."
 
 
 def normalize_workbook_path(path_text: str) -> Path:
@@ -107,28 +94,69 @@ def normalize_workbook_path(path_text: str) -> Path:
     return path
 
 
-def find_next_empty_row_with_getter(value_getter, column: str, start_row: int) -> int:
-    row = max(1, start_row)
+def column_name_to_index(column: str) -> int:
+    result = 0
+    for char in normalize_column_name(column):
+        result = (result * 26) + (ord(char) - 64)
+    return result
+
+
+def index_to_column_name(index: int) -> str:
+    if index < 1:
+        raise ValueError("Der Excel-Spaltenindex muss größer als 0 sein.")
+
+    chars: list[str] = []
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        chars.append(chr(65 + remainder))
+    return "".join(reversed(chars))
+
+
+def build_cell_ref(column: str, row: int) -> str:
+    return f"{normalize_column_name(column)}{max(1, int(row))}"
+
+
+def find_next_empty_position_with_getter(
+    value_getter,
+    column: str,
+    start_row: int,
+    direction: str,
+) -> tuple[str, int]:
+    normalized_column = normalize_column_name(column)
+    normalized_direction = normalize_scan_direction(direction)
+    row = max(1, int(start_row))
+
+    if normalized_direction == FLOW_DOWN:
+        while True:
+            if value_getter(build_cell_ref(normalized_column, row)) in (None, ""):
+                return normalized_column, row
+            row += 1
+
+    column_index = column_name_to_index(normalized_column)
     while True:
-        if value_getter(f"{column}{row}") in (None, ""):
-            return row
-        row += 1
+        current_column = index_to_column_name(column_index)
+        if value_getter(build_cell_ref(current_column, row)) in (None, ""):
+            return current_column, row
+        column_index += 1
 
 
 class FileExcelBackend:
     key = EXCEL_MODE_FILE
 
-    def detect_current_row(self, settings: ExcelSettings) -> int:
+    def detect_current_cell(self, settings: ExcelSettings) -> tuple[str, int]:
         workbook, worksheet, _ = self._open_workbook(settings)
-        column = normalize_column_name(settings.column)
-        row = find_next_empty_row_with_getter(lambda cell: worksheet[cell].value, column, settings.start_row)
+        column, row = find_next_empty_position_with_getter(
+            lambda cell: worksheet[cell].value,
+            settings.column,
+            settings.start_row,
+            settings.direction,
+        )
         workbook.close()
-        return row
+        return column, row
 
-    def write_value(self, settings: ExcelSettings, row: int, value: float) -> ExcelWriteResult:
+    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
         workbook, worksheet, path = self._open_workbook(settings)
-        column = normalize_column_name(settings.column)
-        cell = f"{column}{row}"
+        cell = build_cell_ref(column, row)
 
         worksheet[cell] = float(value)
         workbook.save(path)
@@ -139,8 +167,8 @@ class FileExcelBackend:
             sheet_name=worksheet.title,
             cell=cell,
             value=float(value),
-            row=row,
-            column=column,
+            row=max(1, int(row)),
+            column=normalize_column_name(column),
             backend=self.key,
         )
 
@@ -177,15 +205,18 @@ class FileExcelBackend:
 class LiveExcelBackend:
     key = EXCEL_MODE_LIVE
 
-    def detect_current_row(self, settings: ExcelSettings) -> int:
+    def detect_current_cell(self, settings: ExcelSettings) -> tuple[str, int]:
         _, worksheet, _ = self._open_workbook(settings)
-        column = normalize_column_name(settings.column)
-        return find_next_empty_row_with_getter(lambda cell: worksheet.range(cell).value, column, settings.start_row)
+        return find_next_empty_position_with_getter(
+            lambda cell: worksheet.range(cell).value,
+            settings.column,
+            settings.start_row,
+            settings.direction,
+        )
 
-    def write_value(self, settings: ExcelSettings, row: int, value: float) -> ExcelWriteResult:
+    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
         workbook, worksheet, path = self._open_workbook(settings)
-        column = normalize_column_name(settings.column)
-        cell = f"{column}{row}"
+        cell = build_cell_ref(column, row)
 
         worksheet.range(cell).value = float(value)
         workbook.save()
@@ -195,8 +226,8 @@ class LiveExcelBackend:
             sheet_name=worksheet.name,
             cell=cell,
             value=float(value),
-            row=row,
-            column=column,
+            row=max(1, int(row)),
+            column=normalize_column_name(column),
             backend=self.key,
         )
 
@@ -210,7 +241,7 @@ class LiveExcelBackend:
         except Exception as exc:  # pragma: no cover - depends on local Excel app
             raise LiveExcelUnavailableError(
                 "Live-Modus konnte die lokale Excel-App nicht verbinden. "
-                "Bitte pruefe, ob Microsoft Excel lokal installiert ist, die Datei im Desktop-Excel geoeffnet werden kann "
+                "Bitte prüfe, ob Microsoft Excel lokal installiert ist, die Datei im Desktop-Excel geöffnet werden kann "
                 f"und der Python-Host Excel steuern darf. Originalfehler: {exc}"
             ) from exc
 
@@ -260,8 +291,6 @@ class LiveExcelBackend:
         resolved_root = expanded.resolve()
         home = Path.home()
 
-        # xlwings documents the Finder-style root on macOS, e.g. ~/OneDrive - Company.
-        # If the selected file lives under Library/CloudStorage, prefer a matching home alias/symlink.
         for candidate in home.glob("OneDrive*"):
             try:
                 if candidate.resolve() == resolved_root:
@@ -338,49 +367,35 @@ LIVE_BACKEND = LiveExcelBackend()
 class ExcelSession:
     def __init__(self, settings: ExcelSettings):
         self.settings = settings
-        self.current_row: int | None = None
         self.active_backend = normalize_excel_mode(settings.mode)
 
-    def update_settings(self, settings: ExcelSettings, preserve_row: bool = False) -> None:
+    def update_settings(self, settings: ExcelSettings) -> None:
         self.settings = settings
         self.active_backend = normalize_excel_mode(settings.mode)
-        if not preserve_row:
-            self.current_row = None
-
-    def reset_row(self, row: int | None = None) -> None:
-        self.current_row = max(1, row or self.settings.start_row)
 
     def preview_cell(self) -> str:
-        column = normalize_column_name(self.settings.column)
-        row = self.current_row if self.current_row is not None else max(1, self.settings.start_row)
-        return f"{column}{row}"
+        return build_cell_ref(self.settings.column, self.settings.start_row)
 
     def backend_display_name(self) -> str:
         return backend_label(self.active_backend)
 
-    def detect_current_row(self) -> int:
-        row = self._run_backend("detect_current_row")
-        self.current_row = row
-        return row
+    def detect_current_cell(self) -> tuple[str, int]:
+        return self._run_backend("detect_current_cell")
 
     def write_value(self, value: float) -> ExcelWriteResult:
-        if self.current_row is None:
-            self.current_row = self.detect_current_row()
-
-        result = self._run_backend("write_value", self.current_row, value)
-        written_row = self.current_row
-        if self.settings.auto_advance:
-            self.current_row += 1
-        else:
-            self.current_row = written_row
-
-        return result
+        column, row = self.detect_current_cell()
+        return self._run_backend("write_value", column, row, value)
 
     def _run_backend(self, method_name: str, *args):
         mode = normalize_excel_mode(self.settings.mode)
-        backends = [FILE_BACKEND] if mode == EXCEL_MODE_FILE else [LIVE_BACKEND] if mode == EXCEL_MODE_LIVE else [LIVE_BACKEND, FILE_BACKEND]
-        last_error: Exception | None = None
+        if mode == EXCEL_MODE_FILE:
+            backends = [FILE_BACKEND]
+        elif mode == EXCEL_MODE_LIVE:
+            backends = [LIVE_BACKEND]
+        else:
+            backends = [LIVE_BACKEND, FILE_BACKEND]
 
+        last_error: Exception | None = None
         for backend in backends:
             try:
                 result = getattr(backend, method_name)(self.settings, *args)

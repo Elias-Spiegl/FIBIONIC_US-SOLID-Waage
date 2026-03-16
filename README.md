@@ -1,42 +1,56 @@
-# FIBIONIC US-Solid Waage
+# fibionic Gewichtslogging
 
-Desktop-App fuer die US-Solid Waage `USS-DBS28-50`, die einen RS232-Datenstrom einliest, stabile Gewichte erkennt und den finalen Zahlenwert in eine Excel-Datei schreibt.
+Desktop-App für die US-Solid Waage `USS-DBS28-50`.  
+Die Anwendung liest den Datenstrom der Waage ein, erkennt stabile Messwerte und schreibt den Zahlenwert automatisch in eine Excel-Datei.
 
-Die UI basiert auf `PySide6`, damit das Tool sowohl auf macOS als auch spaeter als Windows-`.exe` sauber laeuft.
+Die App läuft lokal auf `macOS` und kann später als Windows-`.exe` für den Produktions-PC gebaut werden.
 
-## Was die erste Version schon kann
+## Zweck der App
 
-- RS232-Quelle mit den Standardwerten aus dem Handbuch nutzen:
-  - `9600 Baud`
-  - `8N1`
-  - kontinuierlicher Ausgabemodus auf der Waage
-- Live-Datenstrom lesen und Rohdaten anzeigen
-- Zielgewicht plus Erfassungsfenster definieren
-- Schwankungen ueber eine Stabilitaetslogik abfangen
-- stabile Messungen automatisch oder nach Bestaetigung in Excel schreiben
-- Excel-Datei, Sheet, Spalte, Startzeile und aktuelle Zeile im UI setzen
-- nach jedem Write automatisch zur naechsten Zeile springen
-- Excel `Auto`, `Datei` und `Live` Modus
-- Simulationsmodus fuer Tests auf dem Mac ohne echte Waage
-- letzte Einstellungen lokal speichern
+Das Tool ist für einen einfachen Produktionsablauf gedacht:
 
-## Projektstruktur
+1. Bauteil auf die Waage legen
+2. auf stabilen Messwert warten
+3. Wert automatisch in Excel schreiben
+4. nächstes Bauteil wiegen
 
-```text
-src/fibionic_scale_app/
-  app.py            # Desktop-UI
-  serial_io.py      # serielle Quelle + Simulation
-  parsing.py        # Parser fuer die Scale-Ausgabe
-  stability.py      # Stabilitaets- und Capture-Logik
-  excel_writer.py   # Schreiben nach Excel
-  settings_store.py # lokale Settings
-tests/
-  test_excel_writer.py
-  test_parsing.py
-  test_stability.py
-```
+Die App kümmert sich dabei um:
 
-## Lokaler Start
+- Verbindung zur Waage oder zur Simulation
+- Stabilitätserkennung
+- Prüfung des Zielbereichs
+- Ermittlung der nächsten freien Excel-Zelle
+- Schreiben des Messwerts in Excel
+
+## Voraussetzungen
+
+Für den Betrieb mit echter Waage:
+
+- US-Solid Waage `USS-DBS28-50`
+- RS232-Verbindung zur Waage
+- bei macOS oder Windows in der Regel ein USB-zu-RS232-Adapter
+- Microsoft Excel lokal installiert, wenn Live-Schreiben genutzt werden soll
+
+Für die App:
+
+- Python-Umgebung mit den Paketen aus `requirements.txt`
+- oder später eine gebaute Windows-`.exe`
+
+## Inbetriebnahme
+
+### 1. Waage einstellen
+
+Die Waage sollte für dieses Projekt so konfiguriert sein:
+
+- `9600 Baud`
+- `8N1`
+- kontinuierliche Ausgabe aktiv
+- Einheit auf `g` stellen
+
+Wichtig: Die App erwartet Messwerte in Gramm.  
+Wenn die Waage z. B. in `kg` sendet, erscheint eine Fehlermeldung und du musst die Einheit an der Waage auf `g` umstellen.
+
+### 2. Projekt lokal starten
 
 ```bash
 python -m venv .venv
@@ -45,99 +59,212 @@ pip install -r requirements.txt
 PYTHONPATH=src python -m fibionic_scale_app
 ```
 
-Wenn du das Projekt lieber als Paket im Entwicklungsmodus installieren willst, geht auch:
+Alternativ im Entwicklungsmodus:
 
 ```bash
 pip install -e .
 fibionic-scale
 ```
 
-Wenn du zuerst nur auf dem Mac testen willst:
+## Bedienungsanleitung
 
-1. App starten
-2. `Simulationsmodus` aktiv lassen
-3. Excel-Datei auswaehlen
-4. Zielgewicht setzen
-5. Quelle starten
+### 1. Quelle auswählen
 
-Dann siehst du im UI, wie ein stabiler Wert erkannt und in Excel geschrieben wird.
+Im Bereich `Quelle` wählst du:
 
-## Excel-Modi
+- `Echte Waage`
+- oder `Simulation`
 
-Die App unterstuetzt drei Schreibmodi:
+Wenn eine echte Waage angeschlossen ist, sucht die App den seriellen Port automatisch.  
+Nur wenn nötig, kannst du den Port manuell auswählen.
 
-- `Auto`
-  Auf macOS und Windows versucht die App zuerst den Live-Writer ueber die lokal installierte Excel-App. Wenn das nicht klappt, faellt sie automatisch auf den Datei-Modus zurueck.
-- `Datei-Modus`
-  Die `.xlsx`-Datei wird direkt per `openpyxl` geschrieben. Das ist plattformneutral, aber Aenderungen sind in einer bereits geoeffneten Excel-Datei meist nicht sofort sichtbar.
-- `Live-Modus`
-  Die App schreibt direkt in die lokal laufende Excel-Anwendung ueber `xlwings`. Das ist fuer deinen OneDrive/Excel-Workflow der beste Modus, wenn die Datei waehrend des Loggens offen bleiben soll.
+### 2. Excel-Ziel einstellen
 
-Hinweise zum Live-Modus:
+Im Bereich `Excel` legst du fest:
 
-- funktioniert auf `macOS` und `Windows`
-- benoetigt eine lokal installierte Desktop-Version von Microsoft Excel
-- funktioniert nicht fuer reine Excel-Online-Sessions ohne lokale Excel-App
-- die Datei sollte auf demselben Rechner liegen bzw. von demselben Rechner aus in Excel geoeffnet werden
+- Excel-Datei
+- `Sheet`
+- `Spalte`
+- `Zeile`
+- `Logging-Format`
 
-## Echte Waage anschliessen
+`Logging-Format` bedeutet:
 
-Fuer die `USS-DBS28-50` gehen wir aktuell von dem Format aus, das du im Handbuchfoto gezeigt hast:
+- `Oben nach unten`
+- `Links nach rechts`
 
-- 9-polige RS232-Verbindung
-- Standard-Baudrate `9600 bps`
-- 1 Startbit, 8 Datenbits, 1 Stopbit
-- kontinuierliche Ausgabe auf der Waage aktivieren (`C5-0`)
+Die App sucht von dieser Startposition aus immer selbst die nächste freie Zelle.
 
-Die Parser-Logik ist absichtlich tolerant gebaut und extrahiert den Zahlenwert auch dann, wenn die Waage Leerzeichen und Einheit mitsendet.
+### 3. Messwerte einstellen
 
-Wichtig fuer die aktuelle Konfiguration: Die Waage sendet bei dir momentan Werte in `g`. Das bedeutet:
+Im Bereich `Messwerte` setzt du:
 
-- `Zielgewicht` ist in Gramm einzugeben
-- `Fenster +/-` ist in Gramm einzugeben
-- `Stabilitaets-Toleranz`, `Reset-Schwelle` und `Mindestgewicht` sind ebenfalls in Gramm zu verstehen
-- in Excel wird nur der nackte Zahlenwert geschrieben, also z. B. `44.00`
+- `Zielgewicht (g)`
+- `Abweichung +/- (g)`
 
-In der UI sind diese Felder deshalb auch mit `(g)` gekennzeichnet.
+Beides immer in Gramm.
 
-## Excel-Workflow
+### 4. Quelle starten
 
-Das Tool schreibt immer nur den reinen Zahlenwert in die konfigurierte Zelle.
+Mit `Quelle starten` beginnt der Messbetrieb.
+
+Sobald die Quelle läuft:
+
+- werden `Messwerte` und `Excel` links ausgeblendet
+- im Quellen-Widget wird oben die aktive Quelle angezeigt
+- rechts steht der große Statusbereich im Fokus
+
+### 5. Während des Betriebs
+
+Die drei großen Karten zeigen:
+
+- `Live-Wert`
+- `Stabiler Messwert`
+- `Nächste Zelle`
+
+Darunter stehen die kleineren Live-Informationen:
+
+- `Zielbereich`
+- `Logging-Format`
+
+Wenn ein Messwert erfolgreich gespeichert wurde, wird der Statusbereich kurz visuell hervorgehoben.
+
+### 6. Logging pausieren
+
+Während die Quelle läuft, gibt es zwei Zustände:
+
+- `Logging pausieren`
+- `Logging fortsetzen`
+
+`Logging pausieren` bedeutet:
+
+- die Quelle bleibt verbunden
+- es wird nichts in Excel geschrieben
+- die Bereiche `Messwerte` und `Excel` werden wieder eingeblendet
+- Einstellungen können angepasst werden
+
+`Logging fortsetzen` setzt den normalen Messablauf wieder fort.
+
+### 7. Stopp
+
+Mit `Stopp` wird die Quelle beendet.
+
+Danach:
+
+- springt die App zurück in den Startzustand
+- alle Einstellungsbereiche sind wieder sichtbar
+- die Quelle kann neu gestartet werden
+
+## Excel-Verhalten
+
+Die App schreibt nur den reinen Zahlenwert in Excel.  
+Die Einheit wird nicht mitgeschrieben.
 
 Beispiel:
 
 - Datei: `Messwerte.xlsx`
 - Sheet: `Produktion`
 - Spalte: `F`
-- aktuelle Zeile: `12`
+- Zeile: `12`
+- Logging-Format: `Oben nach unten`
 
-Dann landet die naechste stabile Messung in `Produktion!F12`. Wenn `Auto-Advance` aktiv ist, springt die App anschliessend auf `F13`.
+Dann schreibt die App z. B. nach:
 
-Wenn du waehrenddessen in Excel direkt sehen willst, wie der Wert erscheint, stelle den Excel-Modus im UI auf `Live` oder `Auto`.
+- `Produktion!F12`
+- `Produktion!F13`
+- `Produktion!F14`
 
-## Windows `.exe` bauen
+Bei `Links nach rechts` entsprechend:
 
-Auf dem Windows-Rechner kannst du spaeter mit `PyInstaller` eine einzelne `.exe` erzeugen:
+- `Produktion!F12`
+- `Produktion!G12`
+- `Produktion!H12`
+
+## Simulation
+
+Die App kann vollständig ohne echte Hardware getestet werden.
+
+Verfügbare Simulationsprofile:
+
+- `Stable at target`
+- `Below target`
+- `Above target`
+- `Noisy / unstable`
+- `Step response`
+- `Random batches`
+
+Die Simulation verhält sich für die App wie eine echte Messquelle.  
+Damit kannst du testen:
+
+- Live-Werte
+- Stabilitätserkennung
+- Excel-Schreiben
+- Pause / Fortsetzen / Stopp
+
+## Fehlermeldungen und typische Fälle
+
+### Keine Waage gefunden
+
+Wenn keine Waage automatisch erkannt wird:
+
+- Port neu suchen
+- bei Bedarf `Port manuell wählen`
+- Verkabelung und USB-RS232-Adapter prüfen
+
+### Falsche Einheit
+
+Wenn die Waage nicht in Gramm sendet:
+
+- erscheint eine Warnung
+- das Logging wird angehalten
+- die Einheit an der Waage muss auf `g` gestellt werden
+
+### Excel-Datei kann nicht beschrieben werden
+
+Prüfen:
+
+- ist die richtige Datei ausgewählt?
+- ist Excel lokal installiert?
+- ist die Datei lokal erreichbar?
+- ist die Datei im lokalen Desktop-Excel geöffnet, wenn Live-Schreiben gewünscht ist?
+
+## Windows-`.exe` bauen
+
+Für den späteren Einsatz auf Windows:
 
 ```bash
 pip install -r requirements.txt
 pip install pyinstaller
-pyinstaller --noconfirm --windowed --name FIBIONIC-Waage -F -p src src/fibionic_scale_app/__main__.py
+pyinstaller --noconfirm --windowed --name fibionic-gewichtslogging -F -p src src/fibionic_scale_app/__main__.py
 ```
 
-Danach liegt die fertige Datei unter `dist/FIBIONIC-Waage.exe`.
+Die fertige Datei liegt danach unter:
+
+```text
+dist/fibionic-gewichtslogging.exe
+```
 
 ## Tests
 
-Die kleinen Backend-Tests laufen ohne echte Waage:
+Die vorhandenen Tests laufen ohne echte Waage:
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests
 ```
 
-## Naechste sinnvolle Schritte
+## Projektstruktur
 
-- echte Rohdaten der Waage einmal mitschneiden und Parser feinjustieren
-- optionalen COM-Port-Testbutton einbauen
-- optionalen manuellen "Naechste Zeile"-Button ergaenzen
-- optional Excel-Datei waehrend des Schreibens gegen paralleles Oeffnen absichern
+```text
+src/fibionic_scale_app/
+  app.py            # Desktop-UI
+  serial_io.py      # echte Waage + Simulation
+  parsing.py        # Parser für die Waagendaten
+  stability.py      # Stabilitätslogik
+  excel_writer.py   # Excel-Anbindung
+  settings_store.py # lokale Speicherung der UI-Einstellungen
+tests/
+  test_excel_writer.py
+  test_parsing.py
+  test_scale_sources.py
+  test_stability.py
+```

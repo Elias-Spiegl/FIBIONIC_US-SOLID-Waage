@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -22,59 +21,98 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .excel_writer import (
-    EXCEL_MODE_AUTO,
-    ExcelSession,
-    excel_mode_options,
-    live_backend_status_text,
-    mode_label,
+from .excel_writer import EXCEL_MODE_AUTO, ExcelSession, build_cell_ref, scan_direction_options
+from .models import ExcelSettings, FLOW_DOWN, SerialSettings
+from .serial_io import (
+    SIM_PROFILE_STABLE,
+    SOURCE_MODE_SERIAL,
+    SOURCE_MODE_SIMULATION,
+    ScaleSource,
+    SerialScaleSource,
+    SimulatedScaleSource,
+    StreamEvent,
+    list_serial_ports,
+    preferred_serial_port,
+    simulation_profile_label,
+    simulation_profile_options,
+    source_mode_options,
 )
-from .models import CaptureSettings, ExcelSettings, SerialSettings
-from .serial_io import ScaleStreamWorker, StreamEvent, list_serial_ports
 from .settings_store import SettingsStore
-from .stability import CaptureState, WeightCaptureEngine
+from .stability import CaptureState, WeightCaptureEngine, build_capture_settings
 
 COLORS = {
-    "page": "#F4EFE6",
-    "card": "#FFF9F1",
-    "tile": "#F7E9D8",
-    "surface": "#FFFDF9",
-    "ink": "#14304A",
-    "muted": "#64748B",
-    "accent": "#E86A33",
-    "accent_dark": "#C55121",
-    "accent_soft": "#FFE3D6",
-    "line": "#DCCBBB",
+    "page": "#E3E1E6",
+    "rail": "#EEF0F3",
+    "card": "#FFFFFF",
+    "tile": "#F6FBFD",
+    "surface": "#FFFFFF",
+    "ink": "#1D1D1D",
+    "muted": "#5D646D",
+    "accent": "#44B6CD",
+    "accent_dark": "#258EA5",
+    "accent_soft": "#DFF2F6",
+    "signal": "#FFE800",
+    "signal_dark": "#D7C900",
+    "danger": "#D94C4C",
+    "danger_dark": "#B13A3A",
+    "line": "#C9CED6",
 }
+
+SOURCE_CONTROL_IDLE = "idle"
+SOURCE_CONTROL_RUNNING = "running"
+SOURCE_CONTROL_PAUSED = "paused"
 
 
 class ScaleLoggerWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("FIBIONIC | US-Solid Waage")
-        self.resize(1280, 860)
-        self.setMinimumSize(1120, 760)
+        self.setWindowTitle("fibionic | Gewichtslogging")
+        self.resize(1440, 900)
+        self.setMinimumSize(1280, 800)
 
         self.settings_store = SettingsStore()
-        self.stream_worker: ScaleStreamWorker | None = None
-        self.capture_engine = WeightCaptureEngine(CaptureSettings())
+        self.scale_source: ScaleSource | None = None
+        self.capture_engine = WeightCaptureEngine(build_capture_settings(12.5, 0.5))
         self.excel_session: ExcelSession | None = None
+        self.available_ports: list[str] = []
+        self.detected_port = ""
+        self.manual_port_override = False
+        self.paused = False
+        self.last_excel_error: str | None = None
+        self._saved_manual_port = ""
+        self._flash_widgets: tuple[QWidget, ...] = ()
+        self.source_control_state = SOURCE_CONTROL_IDLE
+        self._syncing_excel_cursor = False
+        self._unit_error: str | None = None
+
+        self.flash_timer = QTimer(self)
+        self.flash_timer.setSingleShot(True)
+        self.flash_timer.setInterval(950)
+        self.flash_timer.timeout.connect(self._clear_logged_flash)
 
         self._build_ui()
+        self._refresh_source_controls()
         self._apply_styles()
         self._load_settings()
         self.refresh_ports()
-        self._refresh_excel_backend_hint()
-        self._refresh_capture_window_label()
+        self._refresh_auto_capture_hint()
+        self._refresh_target_range_display()
+        self._update_source_mode_ui()
+        self._set_running_state(False)
+        self._set_stage(
+            "Bereit zum Start",
+            "Zielgewicht, Abweichung und Excel-Ziel setzen. Danach Quelle starten und auf den Datenstrom warten.",
+        )
+        self._refresh_excel_target(silent=True)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(120)
-        self.poll_timer.timeout.connect(self._poll_worker)
+        self.poll_timer.timeout.connect(self._poll_source_events)
         self.poll_timer.start()
 
     def _build_ui(self) -> None:
@@ -85,217 +123,295 @@ class ScaleLoggerWindow(QMainWindow):
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(18)
 
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        self.left_rail = QFrame()
+        self.left_rail.setObjectName("LeftRail")
+        left_layout = QVBoxLayout(self.left_rail)
+        left_layout.setContentsMargins(14, 14, 14, 14)
         left_layout.setSpacing(14)
 
-        left_scroll = QScrollArea()
-        left_scroll.setWidgetResizable(True)
-        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        left_scroll.setWidget(left_panel)
-        left_scroll.setMinimumWidth(430)
-        left_scroll.setMaximumWidth(500)
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setObjectName("LeftScroll")
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.left_scroll.setWidget(self.left_rail)
+        self.left_scroll.setMinimumWidth(500)
+        self.left_scroll.setMaximumWidth(580)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(14)
 
-        layout.addWidget(left_scroll, 0)
+        layout.addWidget(self.left_scroll, 0)
         layout.addWidget(right_panel, 1)
 
-        hero = QFrame()
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(20, 18, 20, 18)
-        hero_layout.setSpacing(6)
+        self.scale_box = self._build_scale_box()
+        self.setup_panel = QWidget()
+        self.setup_panel.setObjectName("SetupPanel")
+        setup_layout = QVBoxLayout(self.setup_panel)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.setSpacing(14)
+        self.capture_box = self._build_capture_box()
+        self.excel_box = self._build_excel_box()
+        setup_layout.addWidget(self.capture_box)
+        setup_layout.addWidget(self.excel_box)
+        setup_layout.addStretch(1)
 
-        hero_title = QLabel("US-Solid Waage -> Excel Logger")
-        hero_title.setObjectName("HeroTitle")
-        hero_copy = QLabel(
-            "RS232-Datenstrom stabilisieren, Zielgewicht pruefen und jeden bestaetigten Messwert sauber in Excel schreiben."
-        )
-        hero_copy.setWordWrap(True)
-        hero_copy.setObjectName("HeroCopy")
-        hero_layout.addWidget(hero_title)
-        hero_layout.addWidget(hero_copy)
-
-        right_layout.addWidget(hero)
-        right_layout.addLayout(self._build_metrics_row())
-        right_layout.addWidget(self._build_monitor_box(), 1)
-
-        left_layout.addWidget(self._build_connection_box())
-        left_layout.addWidget(self._build_capture_box())
-        left_layout.addWidget(self._build_excel_box())
+        left_layout.addWidget(self.scale_box)
+        left_layout.addWidget(self.setup_panel)
         left_layout.addStretch(1)
 
-    def _build_connection_box(self) -> QGroupBox:
-        box = QGroupBox("Verbindung")
-        layout = QGridLayout(box)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(8)
+        right_layout.addWidget(self._build_header_panel())
+        right_layout.addWidget(self._build_status_panel())
+        right_layout.addWidget(self._build_monitor_box(), 1)
 
-        layout.addWidget(self._field_label("Serieller Port"), 0, 0, 1, 2)
-        self.port_combo = QComboBox()
-        self.port_combo.setEditable(True)
-        self.port_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        if self.port_combo.lineEdit() is not None:
-            self.port_combo.lineEdit().setPlaceholderText("/dev/cu.usbserial-130")
-        layout.addWidget(self.port_combo, 1, 0, 1, 2)
+    def _build_scale_box(self) -> QGroupBox:
+        box = QGroupBox("Quelle")
+        layout = QVBoxLayout(box)
+        layout.setSpacing(12)
 
-        self.refresh_ports_button = self._soft_button("Ports aktualisieren", self.refresh_ports)
-        layout.addWidget(self.refresh_ports_button, 2, 0)
-        self.simulate_checkbox = QCheckBox("Simulationsmodus auf dem Mac verwenden")
-        self.simulate_checkbox.toggled.connect(self._update_source_inputs)
-        layout.addWidget(self.simulate_checkbox, 2, 1)
+        self.connection_setup_panel = QWidget()
+        self.connection_setup_panel.setObjectName("ConnectionSetup")
+        setup_layout = QVBoxLayout(self.connection_setup_panel)
+        setup_layout.setContentsMargins(0, 0, 0, 0)
+        setup_layout.setSpacing(10)
 
-        layout.addWidget(self._field_label("Baudrate"), 3, 0)
-        self.baudrate_edit = QLineEdit("9600")
-        layout.addWidget(self.baudrate_edit, 4, 0)
+        setup_layout.addWidget(self._field_label("Quelle"))
+        self.source_mode_combo, source_shell = self._combo_field()
+        for value, label in source_mode_options():
+            self.source_mode_combo.addItem(label, value)
+        self.source_mode_combo.currentIndexChanged.connect(self._update_source_mode_ui)
+        setup_layout.addWidget(source_shell)
 
-        self.connect_button = self._accent_button("Quelle starten", self.connect_source)
-        self.disconnect_button = self._soft_button("Stoppen", self.disconnect_source)
-        layout.addWidget(self.connect_button, 5, 0)
-        layout.addWidget(self.disconnect_button, 5, 1)
+        self.serial_config_panel = QWidget()
+        serial_layout = QGridLayout(self.serial_config_panel)
+        serial_layout.setContentsMargins(0, 0, 0, 0)
+        serial_layout.setHorizontalSpacing(10)
+        serial_layout.setVerticalSpacing(8)
 
-        layout.addWidget(self._field_label("Status"), 6, 0, 1, 2)
-        self.status_label = QLabel("Bereit.")
-        self.status_label.setWordWrap(True)
-        self.status_label.setObjectName("BodyCopy")
-        layout.addWidget(self.status_label, 7, 0, 1, 2)
+        serial_layout.addWidget(self._field_label("Automatisch erkannt"), 0, 0, 1, 2)
+        self.detected_port_label = QLabel("Noch keine Waage erkannt")
+        self.detected_port_label.setObjectName("InlineValue")
+        self.detected_port_label.setWordWrap(True)
+        serial_layout.addWidget(self.detected_port_label, 1, 0, 1, 2)
+
+        self.refresh_ports_button = self._soft_button("Ports neu suchen", self.refresh_ports)
+        self.manual_port_button = self._soft_button("Port manuell wählen", self.toggle_manual_port_selection)
+        serial_layout.addWidget(self.refresh_ports_button, 2, 0)
+        serial_layout.addWidget(self.manual_port_button, 2, 1)
+
+        self.manual_port_combo, self.manual_port_shell = self._combo_field(editable=True)
+        if self.manual_port_combo.lineEdit() is not None:
+            self.manual_port_combo.lineEdit().setPlaceholderText("/dev/cu.usbserial-130")
+        serial_layout.addWidget(self.manual_port_shell, 3, 0, 1, 2)
+        setup_layout.addWidget(self.serial_config_panel)
+
+        self.simulation_config_panel = QWidget()
+        simulation_layout = QGridLayout(self.simulation_config_panel)
+        simulation_layout.setContentsMargins(0, 0, 0, 0)
+        simulation_layout.setHorizontalSpacing(10)
+        simulation_layout.setVerticalSpacing(8)
+
+        simulation_layout.addWidget(self._field_label("Simulationsprofil"), 0, 0)
+        self.simulation_profile_combo, simulation_shell = self._combo_field()
+        for value, label in simulation_profile_options():
+            self.simulation_profile_combo.addItem(label, value)
+        self.simulation_profile_combo.currentIndexChanged.connect(self._update_source_mode_ui)
+        simulation_layout.addWidget(simulation_shell, 1, 0)
+
+        self.simulation_hint_label = QLabel(
+            "Virtuelle Waage für App-, Stabilitäts- und Excel-Tests ohne echte Hardware."
+        )
+        self.simulation_hint_label.setObjectName("BodyCopy")
+        self.simulation_hint_label.setWordWrap(True)
+        simulation_layout.addWidget(self.simulation_hint_label, 2, 0)
+        setup_layout.addWidget(self.simulation_config_panel)
+
+        layout.addWidget(self.connection_setup_panel)
+
+        self.active_source_panel = QWidget()
+        self.active_source_panel.setVisible(False)
+        active_layout = QVBoxLayout(self.active_source_panel)
+        active_layout.setContentsMargins(0, 0, 0, 0)
+        active_layout.setSpacing(4)
+        active_layout.addWidget(self._field_label("Aktive Quelle"))
+        self.active_source_value = QLabel("--")
+        self.active_source_value.setObjectName("InlineValue")
+        self.active_source_value.setWordWrap(True)
+        active_layout.addWidget(self.active_source_value)
+        layout.addWidget(self.active_source_panel)
+
+        controls_layout = QHBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(10)
+        self.primary_source_button = self._accent_button("Quelle starten", self._handle_primary_source_action)
+        self.stop_button = self._danger_button("Stopp", self.stop_source)
+        controls_layout.addWidget(self.primary_source_button, 1)
+        controls_layout.addWidget(self.stop_button, 1)
+        layout.addLayout(controls_layout)
+
+        self.connection_note_label = QLabel("Quelle noch nicht gestartet.")
+        self.connection_note_label.setWordWrap(True)
+        self.connection_note_label.setObjectName("BodyCopy")
+        layout.addWidget(self.connection_note_label)
+
         return box
 
     def _build_capture_box(self) -> QGroupBox:
-        box = QGroupBox("Erkennungslogik")
+        box = QGroupBox("Messwerte")
         layout = QGridLayout(box)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(8)
 
         self.target_weight_edit = self._line_edit("12.50")
         self.target_window_edit = self._line_edit("0.50")
-        self.stability_tolerance_edit = self._line_edit("0.05")
-        self.stable_samples_edit = self._line_edit("6")
-        self.rearm_threshold_edit = self._line_edit("0.10")
-        self.minimum_weight_edit = self._line_edit("0.05")
+        self.target_weight_edit.textChanged.connect(self._refresh_target_range_display)
+        self.target_window_edit.textChanged.connect(self._refresh_target_range_display)
+        self.target_weight_edit.textChanged.connect(self._refresh_auto_capture_hint)
+        self.target_window_edit.textChanged.connect(self._refresh_auto_capture_hint)
+        self.target_weight_edit.editingFinished.connect(self._apply_runtime_target_changes)
+        self.target_window_edit.editingFinished.connect(self._apply_runtime_target_changes)
 
-        self._add_form_pair(layout, 0, "Zielgewicht (g)", self.target_weight_edit, "Fenster +/- (g)", self.target_window_edit)
         self._add_form_pair(
             layout,
-            2,
-            "Stabilitaets-Toleranz (g)",
-            self.stability_tolerance_edit,
-            "Benoetigte Samples",
-            self.stable_samples_edit,
+            0,
+            "Zielgewicht (g)",
+            self.target_weight_edit,
+            "Abweichung +/- (g)",
+            self.target_window_edit,
         )
-        self._add_form_pair(
-            layout,
-            4,
-            "Reset-Schwelle (g)",
-            self.rearm_threshold_edit,
-            "Mindestgewicht (g)",
-            self.minimum_weight_edit,
-        )
-        self.require_confirmation_checkbox = QCheckBox("Vor dem Schreiben erst bestaetigen")
-        layout.addWidget(self.require_confirmation_checkbox, 6, 0, 1, 2)
-        layout.addWidget(self._soft_button("Erkennung neu starten", self.reset_capture_engine), 7, 0, 1, 2)
+
+        self.auto_capture_hint = QLabel()
+        self.auto_capture_hint.setObjectName("BodyCopy")
+        self.auto_capture_hint.setWordWrap(True)
+        layout.addWidget(self.auto_capture_hint, 2, 0, 1, 2)
         return box
 
     def _build_excel_box(self) -> QGroupBox:
-        box = QGroupBox("Excel-Ziel")
+        box = QGroupBox("Excel")
         layout = QGridLayout(box)
         layout.setHorizontalSpacing(10)
         layout.setVerticalSpacing(8)
 
-        layout.addWidget(self._field_label("Excel-Modus"), 0, 0, 1, 2)
-        self.excel_mode_combo = QComboBox()
-        for value, label in excel_mode_options():
-            self.excel_mode_combo.addItem(label, value)
-        self.excel_mode_combo.currentIndexChanged.connect(self._refresh_excel_backend_hint)
-        layout.addWidget(self.excel_mode_combo, 1, 0, 1, 2)
-
-        self.excel_runtime_label = QLabel(live_backend_status_text())
-        self.excel_runtime_label.setWordWrap(True)
-        self.excel_runtime_label.setObjectName("BodyCopy")
-        layout.addWidget(self.excel_runtime_label, 2, 0, 1, 2)
-
-        layout.addWidget(self._field_label("Excel-Datei (.xlsx)"), 3, 0, 1, 2)
         self.excel_path_edit = QLineEdit()
-        self.excel_path_edit.setPlaceholderText("/Pfad/zur/excel-test-datei.xlsx")
-        layout.addWidget(self.excel_path_edit, 4, 0, 1, 2)
+        self.excel_path_edit.setVisible(False)
+        self.excel_file_name_label = QLabel("")
+        self.excel_file_name_label.setObjectName("InlineValue")
+        self.excel_file_name_label.setWordWrap(True)
+        layout.addWidget(self.excel_file_name_label, 0, 0, 1, 2)
 
-        layout.addWidget(self._soft_button("Datei waehlen", self.browse_excel_file), 5, 0)
-        layout.addWidget(self._soft_button("Testdatei nutzen", self.use_project_excel_file), 5, 1)
-        layout.addWidget(self._soft_button("Zielzelle pruefen", self.refresh_excel_target), 6, 0, 1, 2)
+        self.browse_excel_button = self._soft_button("Datei auswählen", self.browse_excel_file)
+        layout.addWidget(self.browse_excel_button, 1, 0, 1, 2)
 
         self.sheet_name_edit = self._line_edit("Messwerte")
         self.column_edit = self._line_edit("A")
         self.start_row_edit = self._line_edit("2")
-        self.current_row_edit = self._line_edit("2")
+        self.sheet_name_edit.editingFinished.connect(self._handle_excel_settings_changed)
+        self.column_edit.editingFinished.connect(self._handle_excel_settings_changed)
+        self.start_row_edit.editingFinished.connect(self._handle_excel_settings_changed)
 
-        self._add_form_pair(layout, 7, "Sheet", self.sheet_name_edit, "Spalte", self.column_edit)
-        self._add_form_pair(layout, 9, "Startzeile", self.start_row_edit, "Aktuelle Zeile", self.current_row_edit)
+        self._add_form_pair(layout, 2, "Sheet", self.sheet_name_edit, "Spalte", self.column_edit)
 
-        self.auto_advance_checkbox = QCheckBox("Nach jedem Eintrag eine Zeile weiter")
-        self.auto_advance_checkbox.setChecked(True)
-        layout.addWidget(self.auto_advance_checkbox, 11, 0, 1, 2)
+        layout.addWidget(self._field_label("Zeile"), 4, 0)
+        self.direction_combo, direction_shell = self._combo_field()
+        for value, label in scan_direction_options():
+            self.direction_combo.addItem(label, value)
+        self.direction_combo.currentIndexChanged.connect(self._handle_excel_settings_changed)
+        layout.addWidget(self._field_label("Logging-Format"), 4, 1)
+        layout.addWidget(self.start_row_edit, 5, 0)
+        layout.addWidget(direction_shell, 5, 1)
 
-        layout.addWidget(self._field_label("Naechste Zelle"), 12, 0)
-        self.next_cell_value = QLabel("A2")
-        self.next_cell_value.setObjectName("InlineValue")
-        layout.addWidget(self.next_cell_value, 13, 0)
-
-        layout.addWidget(self._field_label("Aktiver Writer"), 12, 1)
-        self.excel_backend_label = QLabel("Auto")
-        self.excel_backend_label.setWordWrap(True)
-        self.excel_backend_label.setObjectName("BodyCopy")
-        layout.addWidget(self.excel_backend_label, 13, 1)
-
-        self.write_button = self._accent_button("Stabilen Wert schreiben", self.write_pending_capture)
-        self.discard_button = self._soft_button("Messung verwerfen", self.discard_pending_capture)
-        layout.addWidget(self.write_button, 14, 0)
-        layout.addWidget(self.discard_button, 14, 1)
         return box
 
-    def _build_metrics_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(14)
+    def _build_header_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("HeaderPanel")
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(22, 18, 22, 18)
+        layout.setSpacing(18)
 
-        self.live_weight_value, self.live_weight_detail, card = self._metric_card("Live-Wert")
-        row.addWidget(card, 1)
+        copy = QVBoxLayout()
+        copy.setSpacing(2)
 
-        self.pending_value_label, self.capture_state_detail, card = self._metric_card("Stabile Messung")
-        row.addWidget(card, 1)
+        brand = QLabel("fibionic gmbh")
+        brand.setObjectName("BrandLabel")
+        title = QLabel("Gewichtslogging")
+        title.setObjectName("HeaderTitle")
 
-        self.next_cell_metric_value, self.connection_detail_metric, card = self._metric_card("Naechste Zelle")
-        row.addWidget(card, 1)
+        copy.addWidget(brand)
+        copy.addWidget(title)
+        layout.addLayout(copy, 1)
 
-        self.capture_window_value, self.window_detail_metric, card = self._metric_card("Zielfenster")
-        row.addWidget(card, 1)
-        return row
+        ornament = QWidget()
+        ornament_layout = QHBoxLayout(ornament)
+        ornament_layout.setContentsMargins(0, 0, 0, 0)
+        ornament_layout.setSpacing(8)
+        for index, height in enumerate((34, 54, 42, 26), start=1):
+            line = QFrame()
+            line.setObjectName("FiberLine")
+            if index == 2:
+                line.setProperty("variant", "accent")
+            elif index == 4:
+                line.setProperty("variant", "signal")
+            line.setFixedSize(3, height)
+            ornament_layout.addWidget(line)
+        layout.addWidget(ornament, 0)
+
+        return panel
+
+    def _build_status_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("StatusPanel")
+        self.status_panel = panel
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(16)
+
+        self.stage_label = QLabel("Bereit")
+        self.stage_label.setObjectName("StageLabel")
+        self.stage_copy_label = QLabel("")
+        self.stage_copy_label.setObjectName("StageCopy")
+        self.stage_copy_label.setWordWrap(True)
+        layout.addWidget(self.stage_label)
+        layout.addWidget(self.stage_copy_label)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(12)
+        self.live_weight_value, self.live_weight_detail, self.live_card = self._metric_card("Live-Wert")
+        self.pending_value_label, self.pending_detail_label, self.pending_card = self._metric_card("Stabiler Messwert")
+        self.next_cell_value, self.next_cell_detail_label, self.next_cell_card = self._metric_card("Nächste Zelle")
+        self._flash_widgets = (self.status_panel, self.pending_card, self.next_cell_card)
+        stats_row.addWidget(self.live_card, 1)
+        stats_row.addWidget(self.pending_card, 1)
+        stats_row.addWidget(self.next_cell_card, 1)
+        layout.addLayout(stats_row)
+
+        meta = QGridLayout()
+        meta.setHorizontalSpacing(20)
+        meta.setVerticalSpacing(8)
+        meta.addWidget(self._field_label("Zielbereich"), 0, 0)
+        self.target_range_value = QLabel("--")
+        self.target_range_value.setObjectName("BodyCopy")
+        meta.addWidget(self.target_range_value, 0, 1)
+
+        meta.addWidget(self._field_label("Logging-Format"), 0, 2)
+        self.logging_format_value = QLabel("--")
+        self.logging_format_value.setObjectName("BodyCopy")
+        meta.addWidget(self.logging_format_value, 0, 3)
+        layout.addLayout(meta)
+
+        self.backend_value = QLabel("Auto")
+        self.backend_value.hide()
+        self.raw_value_label = QLabel("-")
+        self.raw_value_label.hide()
+
+        return panel
 
     def _build_monitor_box(self) -> QGroupBox:
-        box = QGroupBox("Monitoring")
+        box = QGroupBox("Verlauf")
         layout = QVBoxLayout(box)
-        layout.setSpacing(12)
-
-        info = QFrame()
-        info_layout = QGridLayout(info)
-        info_layout.setHorizontalSpacing(10)
-        info_layout.setVerticalSpacing(8)
-
-        info_layout.addWidget(self._field_label("Rohdaten"), 0, 0)
-        self.raw_value_label = QLabel("-")
-        self.raw_value_label.setWordWrap(True)
-        self.raw_value_label.setObjectName("BodyCopy")
-        info_layout.addWidget(self.raw_value_label, 0, 1)
-
-        info_layout.addWidget(self._field_label("Verbindung"), 1, 0)
-        self.connection_status_label = QLabel("Nicht verbunden")
-        self.connection_status_label.setWordWrap(True)
-        self.connection_status_label.setObjectName("BodyCopy")
-        info_layout.addWidget(self.connection_status_label, 1, 1)
-
-        layout.addWidget(info)
+        layout.setSpacing(10)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -316,8 +432,8 @@ class ScaleLoggerWindow(QMainWindow):
         value_label = QLabel("--")
         value_label.setObjectName("MetricValue")
         detail_label = QLabel("-")
-        detail_label.setWordWrap(True)
         detail_label.setObjectName("MetricDetail")
+        detail_label.setWordWrap(True)
 
         layout.addWidget(title_label)
         layout.addWidget(value_label)
@@ -330,8 +446,28 @@ class ScaleLoggerWindow(QMainWindow):
         return label
 
     def _line_edit(self, value: str) -> QLineEdit:
-        edit = QLineEdit(value)
-        return edit
+        return QLineEdit(value)
+
+    def _combo_field(self, editable: bool = False) -> tuple[QComboBox, QFrame]:
+        combo = QComboBox()
+        combo.setObjectName("FormCombo")
+        combo.setEditable(editable)
+        if editable and combo.lineEdit() is not None:
+            combo.lineEdit().setPlaceholderText("")
+
+        shell = QFrame()
+        shell.setObjectName("FieldShell")
+        shell_layout = QHBoxLayout(shell)
+        shell_layout.setContentsMargins(2, 1, 2, 1)
+        shell_layout.setSpacing(0)
+        arrow_button = QToolButton(shell)
+        arrow_button.setObjectName("ComboArrowButton")
+        arrow_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        arrow_button.setText("\u2304")
+        arrow_button.clicked.connect(combo.showPopup)
+        shell_layout.addWidget(combo, 1)
+        shell_layout.addWidget(arrow_button, 0)
+        return combo, shell
 
     def _add_form_pair(
         self,
@@ -359,6 +495,12 @@ class ScaleLoggerWindow(QMainWindow):
         button.clicked.connect(handler)
         return button
 
+    def _danger_button(self, text: str, handler) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("DangerButton")
+        button.clicked.connect(handler)
+        return button
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             f"""
@@ -367,19 +509,42 @@ class ScaleLoggerWindow(QMainWindow):
             }}
             QWidget {{
                 color: {COLORS["ink"]};
-                font-family: "Avenir Next", "Segoe UI", sans-serif;
+                font-family: "Avenir Next LT Pro", "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
                 font-size: 10pt;
+            }}
+            QScrollArea#LeftScroll {{
+                background: transparent;
+                border: none;
+            }}
+            QScrollArea#LeftScroll > QWidget > QWidget {{
+                background: transparent;
+                border: none;
+            }}
+            QFrame#LeftRail {{
+                background: {COLORS["rail"]};
+                border: 1px solid {COLORS["line"]};
+                border-radius: 14px;
             }}
             QFrame, QGroupBox {{
                 background: {COLORS["card"]};
                 border: 1px solid {COLORS["line"]};
-                border-radius: 18px;
+                border-radius: 14px;
+            }}
+            QFrame#HeaderPanel {{
+                background: {COLORS["card"]};
+            }}
+            QFrame#StatusPanel {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS["card"]}, stop:1 {COLORS["accent_soft"]});
+            }}
+            QFrame#StatusPanel[flashState="success"] {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFCE8, stop:1 #FFF4A6);
+                border: 1px solid {COLORS["signal_dark"]};
             }}
             QGroupBox {{
                 margin-top: 18px;
                 padding-top: 20px;
-                font-size: 12pt;
-                font-weight: 700;
+                font-size: 12.5pt;
+                font-weight: 600;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
@@ -387,139 +552,227 @@ class ScaleLoggerWindow(QMainWindow):
                 padding: 0 6px;
                 color: {COLORS["ink"]};
             }}
-            QLabel#HeroTitle {{
-                font-size: 22pt;
-                font-weight: 800;
-                color: {COLORS["ink"]};
-            }}
-            QLabel#HeroCopy {{
+            QLabel#BrandLabel {{
+                font-size: 11pt;
+                font-weight: 500;
+                letter-spacing: 0.5px;
                 color: {COLORS["muted"]};
+                border: none;
+                background: transparent;
+            }}
+            QLabel#HeaderTitle {{
+                font-size: 26pt;
+                font-weight: 500;
+                color: {COLORS["ink"]};
+                border: none;
+                background: transparent;
+            }}
+            QLabel#HeaderCopy {{
                 font-size: 10.5pt;
+                color: {COLORS["muted"]};
+                border: none;
+                background: transparent;
+            }}
+            QLabel#StageLabel {{
+                font-size: 24pt;
+                font-weight: 500;
+                color: {COLORS["ink"]};
+                border: none;
+                background: transparent;
+            }}
+            QLabel#StageCopy {{
+                font-size: 11pt;
+                color: {COLORS["muted"]};
+                border: none;
+                background: transparent;
             }}
             QLabel#FieldLabel {{
                 color: {COLORS["muted"]};
                 font-size: 9pt;
-                font-weight: 700;
+                font-weight: 500;
                 border: none;
                 background: transparent;
             }}
             QLabel#MetricTitle {{
                 color: {COLORS["muted"]};
                 font-size: 9pt;
-                font-weight: 700;
+                font-weight: 500;
                 border: none;
                 background: transparent;
             }}
             QLabel#MetricValue {{
-                font-size: 20pt;
-                font-weight: 800;
+                font-size: 21pt;
+                font-weight: 600;
                 color: {COLORS["ink"]};
                 border: none;
                 background: transparent;
             }}
-            QLabel#MetricDetail, QLabel#BodyCopy {{
+            QLabel#MetricDetail, QLabel#BodyCopy, QLabel#InlineValue {{
                 color: {COLORS["ink"]};
                 border: none;
                 background: transparent;
             }}
             QLabel#InlineValue {{
-                font-size: 16pt;
-                font-weight: 800;
-                color: {COLORS["ink"]};
-                border: none;
-                background: transparent;
+                font-size: 14pt;
+                font-weight: 600;
             }}
             QFrame#MetricCard {{
                 background: {COLORS["tile"]};
-                border-radius: 20px;
-                min-height: 150px;
+                border-radius: 12px;
+                min-height: 128px;
+                border: 1px solid {COLORS["line"]};
             }}
-            QLineEdit, QComboBox, QPlainTextEdit {{
+            QFrame#MetricCard[flashState="success"] {{
+                background: #FFF7B8;
+                border: 1px solid {COLORS["signal_dark"]};
+            }}
+            QFrame#FieldShell {{
                 background: {COLORS["surface"]};
                 border: 1px solid {COLORS["line"]};
-                border-radius: 12px;
+                border-radius: 10px;
+            }}
+            QLineEdit, QPlainTextEdit {{
+                background: {COLORS["surface"]};
+                border: 1px solid {COLORS["line"]};
+                border-radius: 10px;
                 padding: 8px 10px;
                 selection-background-color: {COLORS["accent"]};
                 font-size: 10.5pt;
             }}
-            QLineEdit, QComboBox {{
-                min-height: 30px;
+            QComboBox#FormCombo {{
+                background: transparent;
+                border: none;
+                padding: 2px 2px 2px 10px;
+                min-height: 34px;
+                selection-background-color: {COLORS["accent"]};
+            }}
+            QComboBox#FormCombo::drop-down {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 0px;
+                border: none;
+                background: transparent;
+            }}
+            QComboBox#FormCombo::down-arrow {{
+                image: none;
+                width: 0px;
+                height: 0px;
+            }}
+            QComboBox#FormCombo QAbstractItemView {{
+                background: {COLORS["surface"]};
+                color: {COLORS["ink"]};
+                border: 1px solid {COLORS["line"]};
+                selection-background-color: {COLORS["accent_soft"]};
+                selection-color: {COLORS["ink"]};
+                outline: none;
+            }}
+            QComboBox#FormCombo QLineEdit {{
+                background: transparent;
+                border: none;
+                padding: 0;
+                margin: 0;
+            }}
+            QToolButton#ComboArrowButton {{
+                background: transparent;
+                border: none;
+                min-width: 28px;
+                max-width: 28px;
+                min-height: 34px;
+                padding: 0 8px 0 0;
+                color: {COLORS["muted"]};
+                font-size: 14pt;
+                font-weight: 600;
+            }}
+            QToolButton#ComboArrowButton:hover {{
+                color: {COLORS["accent_dark"]};
             }}
             QPlainTextEdit#LogView {{
                 font-family: "SF Mono", "Cascadia Code", monospace;
                 font-size: 9.5pt;
             }}
             QPushButton {{
-                border-radius: 12px;
-                min-height: 36px;
+                border-radius: 10px;
+                min-height: 38px;
                 padding: 8px 14px;
-                font-weight: 700;
+                font-weight: 600;
                 font-size: 10.5pt;
             }}
             QPushButton#AccentButton {{
-                background: {COLORS["accent"]};
-                color: white;
-                border: none;
+                background: {COLORS["signal"]};
+                color: {COLORS["ink"]};
+                border: 1px solid {COLORS["signal_dark"]};
             }}
             QPushButton#AccentButton:hover {{
-                background: {COLORS["accent_dark"]};
+                background: #FFF066;
             }}
             QPushButton#SoftButton {{
-                background: {COLORS["accent_soft"]};
-                color: {COLORS["ink"]};
-                border: none;
+                background: transparent;
+                color: {COLORS["accent_dark"]};
+                border: 1px solid {COLORS["accent"]};
             }}
             QPushButton#SoftButton:hover {{
-                background: #ffd4be;
+                background: {COLORS["accent_soft"]};
             }}
-            QCheckBox {{
-                spacing: 8px;
-                font-size: 10.5pt;
+            QPushButton#DangerButton {{
+                background: {COLORS["danger"]};
+                color: #FFFFFF;
+                border: 1px solid {COLORS["danger_dark"]};
+            }}
+            QPushButton#DangerButton:hover {{
+                background: #E35D5D;
+            }}
+            QFrame#FiberLine {{
+                background: {COLORS["muted"]};
+                border: none;
+                border-radius: 1px;
+            }}
+            QFrame#FiberLine[variant="accent"] {{
+                background: {COLORS["accent"]};
+            }}
+            QFrame#FiberLine[variant="signal"] {{
+                background: {COLORS["signal"]};
             }}
             """
         )
 
-    def _refresh_excel_backend_hint(self) -> None:
-        mode = self.excel_mode_combo.currentData() or EXCEL_MODE_AUTO
-        if mode == EXCEL_MODE_AUTO:
-            text = (
-                f"{live_backend_status_text()} "
-                "Im Auto-Modus versucht die App zuerst den Live-Writer und faellt sonst auf den Datei-Modus zurueck."
-            )
-        elif mode == "file":
-            text = "Datei-Modus: Die .xlsx-Datei wird direkt auf dem Dateisystem geschrieben."
-        else:
-            text = (
-                f"{live_backend_status_text()} "
-                "Im Live-Modus schreibt die App direkt in die lokale Excel-Anwendung."
-            )
-        self.excel_runtime_label.setText(text)
-        if self.excel_session is None or self.excel_session.settings.mode != mode:
-            self._set_excel_backend(mode_label(mode))
-
     def refresh_ports(self) -> None:
-        current = self.port_combo.currentText().strip()
+        manual_text = self._saved_manual_port or self.manual_port_combo.currentText().strip()
         ports = list_serial_ports()
-        if current and current not in ports:
-            ports.append(current)
+        if manual_text and manual_text not in ports:
+            ports.append(manual_text)
 
-        self.port_combo.clear()
-        self.port_combo.addItems(ports)
-        if current:
-            self.port_combo.setCurrentText(current)
-        elif ports:
-            self.port_combo.setCurrentText(ports[0])
-        elif not self.simulate_checkbox.isChecked():
-            self._set_status("Keine seriellen Ports gefunden. Du kannst den Port auch manuell eintragen.")
+        self.available_ports = sorted(ports)
+        self.detected_port = preferred_serial_port(self.available_ports) or ""
+        self.detected_port_label.setText(self.detected_port or "Keine Waage gefunden")
+
+        self.manual_port_combo.clear()
+        self.manual_port_combo.addItems(self.available_ports)
+        if manual_text:
+            self.manual_port_combo.setCurrentText(manual_text)
+        elif self.detected_port:
+            self.manual_port_combo.setCurrentText(self.detected_port)
+
+        has_multiple_ports = len(self.available_ports) > 1
+        self.manual_port_button.setVisible(has_multiple_ports or not self.detected_port)
+        self.manual_port_shell.setVisible(self.manual_port_override and (has_multiple_ports or not self.detected_port))
+        self.manual_port_button.setText("Automatik nutzen" if self.manual_port_override else "Port manuell wählen")
+
+        if self.scale_source is None:
+            self.active_source_value.setText(self._active_source_preview())
+
+        if self._selected_source_mode() == SOURCE_MODE_SERIAL and not self.detected_port and not self.manual_port_override:
+            self.connection_note_label.setText("Keine Waage automatisch gefunden. Bei Bedarf den Port manuell wählen.")
+
+    def toggle_manual_port_selection(self) -> None:
+        self.manual_port_override = not self.manual_port_override
+        self._saved_manual_port = self.manual_port_combo.currentText().strip()
+        self.refresh_ports()
 
     def browse_excel_file(self) -> None:
-        start_path = self.excel_path_edit.text().strip()
-        if not start_path:
-            start_path = str(Path.cwd())
-
+        start_path = self.excel_path_edit.text().strip() or str(Path.cwd())
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Excel-Datei auswaehlen",
+            "Excel-Datei auswählen",
             start_path,
             "Excel-Datei (*.xlsx)",
         )
@@ -527,128 +780,231 @@ class ScaleLoggerWindow(QMainWindow):
             return
 
         self.excel_path_edit.setText(path)
-        self.refresh_excel_target()
+        self._handle_excel_settings_changed()
 
-    def use_project_excel_file(self) -> None:
-        project_file = Path.cwd() / "excel-test-datei.xlsx"
-        if not project_file.exists():
-            QMessageBox.information(
-                self,
-                "Datei nicht gefunden",
-                f"Im Projektordner wurde keine Datei unter\n{project_file}\ngefunden.",
-            )
+    def _handle_primary_source_action(self) -> None:
+        if self.source_control_state == SOURCE_CONTROL_IDLE:
+            self.start_source()
             return
 
-        self.excel_path_edit.setText(str(project_file))
-        self.refresh_excel_target()
+        if self.source_control_state == SOURCE_CONTROL_RUNNING:
+            self.pause_source()
+            return
+
+        self.resume_source()
+
+    def _set_source_control_state(self, state: str) -> None:
+        self.source_control_state = state
+        self._set_running_state(self.scale_source is not None)
+
+    def _refresh_source_controls(self) -> None:
+        state = self.source_control_state
+        primary_label = {
+            SOURCE_CONTROL_IDLE: "Quelle starten",
+            SOURCE_CONTROL_RUNNING: "Logging pausieren",
+            SOURCE_CONTROL_PAUSED: "Logging fortsetzen",
+        }[state]
+
+        self.primary_source_button.setText(primary_label)
+        self.primary_source_button.setVisible(True)
+        self.stop_button.setVisible(state != SOURCE_CONTROL_IDLE)
+
+        start_available = state != SOURCE_CONTROL_IDLE or self.scale_source is None
+        self.primary_source_button.setEnabled(start_available)
+        self.stop_button.setEnabled(state != SOURCE_CONTROL_IDLE and self.scale_source is not None)
+
+    def start_source(self) -> None:
+        if self.scale_source and self.scale_source.is_alive():
+            return
+
+        if self._selected_source_mode() == SOURCE_MODE_SERIAL:
+            self.refresh_ports()
+
+        try:
+            capture_settings = self._collect_capture_settings()
+            self.capture_engine.update_settings(capture_settings)
+            session = self._sync_excel_session()
+            column, row = session.detect_current_cell()
+            source = self._build_scale_source(capture_settings.target_weight)
+        except Exception as exc:
+            QMessageBox.critical(self, "Konfiguration", str(exc))
+            return
+
+        self.scale_source = source
+        self.paused = False
+        self.last_excel_error = None
+        self._set_source_control_state(SOURCE_CONTROL_RUNNING)
+        self._set_pending_value("--")
+        self.pending_detail_label.setText("Warte auf Treffer")
+        self._set_next_cell_position(column, row)
+        self._set_backend(session.backend_display_name())
+        self.active_source_value.setText(self._source_runtime_name(source))
+        self._set_running_state(True)
+        self._set_stage("Verbinde Quelle", f"Starte {self._source_runtime_name(source)} und warte auf den Datenstrom.")
+        self.connection_note_label.setText("Quelle wird gestartet...")
+        source.start()
+        self._save_settings()
 
     def connect_source(self) -> None:
-        if self.stream_worker and self.stream_worker.is_alive():
+        self.start_source()
+
+    def pause_source(self) -> None:
+        if self.scale_source is None:
             return
 
-        try:
-            serial_settings = self._collect_serial_settings()
-            self.capture_engine.update_settings(self._collect_capture_settings())
-        except ValueError as exc:
-            QMessageBox.critical(self, "Ungueltige Eingabe", str(exc))
-            return
-
-        self._refresh_capture_window_label()
+        self.paused = True
+        self.capture_engine.reset()
         self._set_pending_value("--")
-        self._set_capture_state("Verbinde Quelle")
-        self._set_status("Quelle wird gestartet...")
+        self.pending_detail_label.setText("Logging aus")
+        self._set_stage("Pausiert", "Die Quelle läuft weiter, aber es wird nichts in Excel geschrieben.")
+        self.connection_note_label.setText("Pausiert. Live-Werte laufen weiter, Logging ist aus.")
+        self._set_source_control_state(SOURCE_CONTROL_PAUSED)
+        self._refresh_runtime_inputs()
 
-        self.stream_worker = ScaleStreamWorker(
-            serial_settings,
-            simulate=self.simulate_checkbox.isChecked(),
-            simulation_target=self.capture_engine.settings.target_weight,
-        )
-        self.stream_worker.start()
-        self._save_settings()
+    def resume_source(self) -> None:
+        if self.scale_source is None:
+            return
+
+        self.paused = False
+        self._apply_runtime_target_changes()
+        self.pending_detail_label.setText("Warte auf Treffer")
+        self._set_stage("Warte auf neues Bauteil", self._target_instruction_text())
+        self.connection_note_label.setText("Logging wieder aktiv.")
+        self._set_source_control_state(SOURCE_CONTROL_RUNNING)
+        self._refresh_runtime_inputs()
+
+    def toggle_pause_logging(self) -> None:
+        if self.source_control_state == SOURCE_CONTROL_RUNNING:
+            self.pause_source()
+            return
+
+        if self.source_control_state == SOURCE_CONTROL_PAUSED:
+            self.resume_source()
+
+    def stop_source(self) -> None:
+        if self.scale_source is not None:
+            self.paused = False
+            self._set_source_control_state(SOURCE_CONTROL_IDLE)
+            self.scale_source.stop()
+            self.connection_note_label.setText("Quelle wird gestoppt...")
 
     def disconnect_source(self) -> None:
-        if self.stream_worker is not None:
-            self.stream_worker.stop()
-            self._set_status("Quelle wird gestoppt...")
-
-    def reset_capture_engine(self) -> None:
-        try:
-            self.capture_engine.update_settings(self._collect_capture_settings())
-        except ValueError as exc:
-            QMessageBox.critical(self, "Ungueltige Eingabe", str(exc))
-            return
-
-        self._set_pending_value("--")
-        self._set_capture_state("Warte auf Gewicht")
-        self._refresh_capture_window_label()
-        self._log("Erkennung zurueckgesetzt.")
+        self.stop_source()
 
     def refresh_excel_target(self) -> None:
+        self._refresh_excel_target(silent=False)
+
+    def _refresh_excel_target(self, silent: bool) -> None:
         try:
             session = self._sync_excel_session()
+            column, row = session.detect_current_cell()
         except Exception as exc:
-            QMessageBox.critical(self, "Excel-Konfiguration", str(exc))
+            self._set_backend("Auto")
+            if silent:
+                return
+            QMessageBox.critical(self, "Excel-Ziel", str(exc))
             return
 
-        self.current_row_edit.setText(str(session.current_row or 0))
-        self._set_next_cell(session.preview_cell())
-        self._set_excel_backend(session.backend_display_name())
-        self._set_status(f"Excel-Ziel bereit: {session.preview_cell()} | {session.backend_display_name()}")
-
-    def write_pending_capture(self) -> None:
-        self._write_pending_capture(auto=False)
-
-    def discard_pending_capture(self) -> None:
-        if self.capture_engine.peek_pending_capture() is None:
-            return
-
-        self.capture_engine.discard_pending_capture()
-        self._set_pending_value("--")
-        self._set_capture_state("Messung verworfen")
-        self._log("Stabile Messung verworfen.")
-
-    def _write_pending_capture(self, auto: bool) -> None:
-        pending_value = self.capture_engine.peek_pending_capture()
-        if pending_value is None:
-            if not auto:
-                QMessageBox.information(self, "Keine stabile Messung", "Aktuell liegt noch keine stabile Messung vor.")
-            return
-
-        try:
-            session = self._sync_excel_session()
-            result = session.write_value(pending_value)
-        except Exception as exc:
-            self._set_status(str(exc))
-            self._log(f"Excel-Fehler: {exc}")
-            if not auto:
-                QMessageBox.critical(self, "Excel-Fehler", str(exc))
-            return
-
-        committed_value = self.capture_engine.commit_pending_capture()
-        self._set_pending_value("--")
-        self._set_capture_state("Messung gespeichert")
-        self.current_row_edit.setText(str(session.current_row or result.row))
-        self._set_next_cell(session.preview_cell())
-        self._set_excel_backend(session.backend_display_name())
-        self._set_status(f"Messwert via {session.backend_display_name()} in {result.sheet_name}!{result.cell} gespeichert.")
-        if committed_value is not None:
-            self._log(f"{committed_value:.3f} -> {result.sheet_name}!{result.cell} ({session.backend_display_name()})")
+        self._set_next_cell_position(column, row)
+        self._set_backend(session.backend_display_name())
+        self._refresh_logging_format_display()
+        if self.scale_source is None:
+            self.connection_note_label.setText(f"Excel-Ziel bereit: {build_cell_ref(column, row)}")
         self._save_settings()
 
-    def _poll_worker(self) -> None:
-        if self.stream_worker is not None:
-            while True:
-                try:
-                    event = self.stream_worker.events.get_nowait()
-                except queue.Empty:
-                    break
-                self._handle_stream_event(event)
+    def _handle_excel_settings_changed(self) -> None:
+        if self._syncing_excel_cursor:
+            return
 
-    def _handle_stream_event(self, event: StreamEvent) -> None:
+        self.excel_session = None
+        if not self.excel_path_edit.text().strip():
+            self._refresh_excel_file_ui()
+            self._set_next_cell("--")
+            self._set_backend("Auto")
+            self._refresh_logging_format_display()
+            self._save_settings()
+            return
+
+        self._refresh_excel_file_ui()
+        self._refresh_excel_target(silent=True)
+        self._save_settings()
+
+    def _refresh_excel_file_ui(self) -> None:
+        path_text = self.excel_path_edit.text().strip()
+        has_file = bool(path_text)
+        allow_file_change = self.source_control_state in {SOURCE_CONTROL_IDLE, SOURCE_CONTROL_PAUSED}
+
+        if has_file:
+            file_name = Path(path_text).name
+            self.excel_file_name_label.setText(file_name)
+            self.excel_file_name_label.setToolTip(path_text)
+        else:
+            self.excel_file_name_label.setText("")
+            self.excel_file_name_label.setToolTip("")
+
+        self.excel_file_name_label.setVisible(has_file)
+        self.browse_excel_button.setVisible((not has_file) or allow_file_change)
+        self.browse_excel_button.setText("Datei ändern" if has_file else "Datei auswählen")
+
+    def _apply_runtime_target_changes(self) -> None:
+        try:
+            capture_settings = self._collect_capture_settings()
+        except ValueError:
+            return
+
+        self.capture_engine.update_settings(capture_settings)
+        if self.scale_source is not None:
+            self.capture_engine.reset()
+            self._set_pending_value("--")
+            if self.paused:
+                self.pending_detail_label.setText("Ziel aktualisiert")
+                self.connection_note_label.setText("Zielgewicht aktualisiert. Mit Logging fortsetzen startet die Erkennung neu.")
+            else:
+                self.pending_detail_label.setText("Warte auf Treffer")
+
+        if isinstance(self.scale_source, SimulatedScaleSource):
+            self.scale_source.update_target_weight(capture_settings.target_weight)
+            if self.paused:
+                self.scale_source.reset_cycle()
+
+        self._save_settings()
+
+    def _flash_logged_feedback(self) -> None:
+        for widget in self._flash_widgets:
+            widget.setProperty("flashState", "success")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+        self.flash_timer.start()
+
+    def _clear_logged_flash(self) -> None:
+        for widget in self._flash_widgets:
+            widget.setProperty("flashState", "")
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
+
+    def _poll_source_events(self) -> None:
+        if self.scale_source is None:
+            return
+
+        source = self.scale_source
+        while True:
+            try:
+                event = source.events.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_source_event(event)
+            if self.scale_source is not source:
+                break
+
+    def _handle_source_event(self, event: StreamEvent) -> None:
         if event.kind == "connected":
-            self._set_connection_state(event.message)
-            self._set_capture_state("Warte auf stabile Werte")
-            self._set_status(event.message)
+            self.connection_note_label.setText(event.message)
+            self.active_source_value.setText(
+                self._source_runtime_name(self.scale_source) if self.scale_source else "--"
+            )
+            self._set_stage("Warte auf neues Bauteil", self._target_instruction_text())
             self._log(event.message)
             return
 
@@ -657,181 +1013,358 @@ class ScaleLoggerWindow(QMainWindow):
             return
 
         if event.kind == "raw":
-            self._set_raw_text(event.raw_text or "-")
+            self.raw_value_label.setText(event.raw_text or "-")
             return
 
         if event.kind == "error":
-            self._set_connection_state("Fehler")
-            self._set_status(event.message)
+            self._set_stage("Fehler", event.message)
+            self.connection_note_label.setText(event.message)
             self._log(f"Fehler: {event.message}")
-            QMessageBox.critical(self, "Serielle Verbindung", event.message)
+            if self._selected_source_mode() == SOURCE_MODE_SERIAL:
+                QMessageBox.critical(self, "Serielle Verbindung", event.message)
             return
 
         if event.kind == "stopped":
-            self._set_connection_state("Nicht verbunden")
-            self._set_status("Quelle gestoppt.")
+            was_simulation = isinstance(self.scale_source, SimulatedScaleSource)
+            self.scale_source = None
+            self.paused = False
+            self._set_source_control_state(SOURCE_CONTROL_IDLE)
+            self._set_running_state(False)
+            self.active_source_value.setText(self._active_source_preview())
+            self.connection_note_label.setText("Simulation gestoppt." if was_simulation else "Quelle gestoppt.")
+            self._set_stage(
+                "Bereit zum Start",
+                "Die Einstellungen sind wieder sichtbar. Für die nächste Serie einfach erneut anschalten.",
+            )
             self._log("Quelle gestoppt.")
-            self.stream_worker = None
+            self.refresh_ports()
 
     def _handle_measurement(self, event: StreamEvent) -> None:
         measurement = event.measurement
         if measurement is None:
             return
 
-        self._set_live_weight(f"{measurement.value:.3f}", measurement.unit or "-")
-        self._set_raw_text(event.raw_text or measurement.raw_text)
+        if not self._ensure_gram_unit(measurement.unit):
+            return
+
+        self._unit_error = None
+        self._set_live_weight(f"{measurement.value:.3f}", measurement.unit or "g")
+
+        if self.paused:
+            return
 
         state = self.capture_engine.process(measurement)
         self._update_capture_dashboard(state)
 
         if state.rearmed:
-            self._log("Waage zurueckgesetzt. Naechste Waegung kann erfasst werden.")
+            self._log("Bauteil entfernt. Nächste Wägung ist bereit.")
 
         if state.new_candidate is not None:
-            self._set_pending_value(f"{state.new_candidate:.3f}")
-            self._set_capture_state("Stabile Messung erkannt")
             self._log(f"Stabiler Wert erkannt: {state.new_candidate:.3f}")
-            if not self.require_confirmation_checkbox.isChecked():
-                self._write_pending_capture(auto=True)
+
+        if self.capture_engine.peek_pending_capture() is not None:
+            self._write_pending_capture(auto=True)
 
     def _update_capture_dashboard(self, state: CaptureState) -> None:
         if state.pending_capture is not None:
             self._set_pending_value(f"{state.pending_capture:.3f}")
-        elif self.capture_engine.peek_pending_capture() is None:
-            self._set_pending_value("--")
 
         if state.pending_capture is not None:
-            self._set_capture_state("Stabil erkannt - bereit zum Schreiben")
+            self.pending_detail_label.setText("Wird in Excel geschrieben")
+            self._set_stage("Stabil erkannt", "Messwert wird gerade übernommen.")
             return
 
         if not state.armed:
-            self._set_capture_state("Bitte Gewicht entfernen")
+            self.pending_detail_label.setText("Warte auf Entnahme")
+            self._set_stage("Bauteil entfernen", "Sobald die Waage wieder frei ist, startet die nächste Messung.")
             return
 
-        if state.stable and state.within_target:
-            self._set_capture_state("Stabil im Zielbereich")
+        if state.within_target and not state.stable:
+            if state.spread is None:
+                self.pending_detail_label.setText("Sammle Werte")
+            else:
+                self.pending_detail_label.setText(f"Spread {state.spread:.3f} g")
+            self._set_stage(
+                "Gewicht stabilisiert sich",
+                f"Im Zielbereich. Automatik wartet auf {self.capture_engine.settings.stable_samples} ruhige Werte.",
+            )
             return
 
-        if state.within_target:
-            self._set_capture_state("Im Zielbereich - warte auf Stabilitaet")
+        if not state.within_target:
+            self.pending_detail_label.setText("Außerhalb Zielbereich")
+        else:
+            self.pending_detail_label.setText("Warte auf Treffer")
+        self._set_stage("Warte auf neues Bauteil", self._target_instruction_text())
+
+    def _write_pending_capture(self, auto: bool) -> None:
+        pending_value = self.capture_engine.peek_pending_capture()
+        if pending_value is None:
             return
 
-        if abs(state.measurement.value) < self.capture_engine.settings.minimum_weight:
-            self._set_capture_state("Warte auf Gewicht")
+        try:
+            session = self._sync_excel_session()
+            result = session.write_value(pending_value)
+            next_column, next_row = session.detect_current_cell()
+        except Exception as exc:
+            message = str(exc)
+            self._set_stage("Excel-Fehler", message)
+            self.connection_note_label.setText("Excel-Ziel bitte prüfen.")
+            if self.last_excel_error != message:
+                self._log(f"Excel-Fehler: {message}")
+            self.last_excel_error = message
+            if not auto:
+                QMessageBox.critical(self, "Excel-Fehler", message)
             return
 
-        self._set_capture_state("Ausserhalb des Zielbereichs")
+        self.last_excel_error = None
+        committed_value = self.capture_engine.commit_pending_capture()
+        self._set_pending_value(f"{pending_value:.3f}")
+        self.pending_detail_label.setText("Gespeichert")
+        self._set_next_cell_position(next_column, next_row)
+        self._set_backend(session.backend_display_name())
+        self._set_stage("Messwert gespeichert", f"{result.sheet_name}!{result.cell} wurde beschrieben. Bitte Bauteil entfernen.")
+        self.connection_note_label.setText(f"Gespeichert in {result.sheet_name}!{result.cell}")
+        self._flash_logged_feedback()
+        if committed_value is not None:
+            self._log(f"{committed_value:.3f} -> {result.sheet_name}!{result.cell} ({session.backend_display_name()})")
+        self._save_settings()
 
-    def _update_source_inputs(self) -> None:
-        self.port_combo.setEnabled(not self.simulate_checkbox.isChecked())
+    def _build_scale_source(self, target_weight: float | None) -> ScaleSource:
+        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
+            profile = self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE
+            return SimulatedScaleSource(profile=profile, target_weight=target_weight)
+
+        return SerialScaleSource(self._collect_serial_settings())
 
     def _collect_serial_settings(self) -> SerialSettings:
-        if not self.simulate_checkbox.isChecked() and not self.port_combo.currentText().strip():
-            raise ValueError("Bitte einen seriellen Port angeben oder den Simulationsmodus aktivieren.")
+        port = self._selected_port()
+        if not port:
+            raise ValueError("Keine Waage gefunden. Bitte Port neu suchen oder den Port manuell auswählen.")
 
-        return SerialSettings(
-            port=self.port_combo.currentText().strip(),
-            baudrate=self._parse_int(self.baudrate_edit.text(), "Baudrate"),
-            timeout=1.0,
-        )
+        return SerialSettings(port=port, baudrate=9600, timeout=1.0)
 
-    def _collect_capture_settings(self) -> CaptureSettings:
-        target_text = self.target_weight_edit.text().strip()
-        target_weight = None if not target_text else self._parse_float(target_text, "Zielgewicht")
+    def _collect_capture_settings(self):
+        target_weight = self._parse_float(self.target_weight_edit.text(), "Zielgewicht")
+        target_window = self._parse_float(self.target_window_edit.text(), "Abweichung")
 
-        return CaptureSettings(
-            target_weight=target_weight,
-            target_window=self._parse_float(self.target_window_edit.text(), "Fenster"),
-            stability_tolerance=self._parse_float(self.stability_tolerance_edit.text(), "Stabilitaets-Toleranz"),
-            stable_samples=self._parse_int(self.stable_samples_edit.text(), "Samples"),
-            rearm_threshold=self._parse_float(self.rearm_threshold_edit.text(), "Reset-Schwelle"),
-            minimum_weight=self._parse_float(self.minimum_weight_edit.text(), "Mindestgewicht"),
-            require_confirmation=self.require_confirmation_checkbox.isChecked(),
-        )
+        if target_weight <= 0:
+            raise ValueError("Das Zielgewicht muss größer als 0 sein.")
+        if target_window <= 0:
+            raise ValueError("Die Abweichung muss größer als 0 sein.")
+
+        return build_capture_settings(target_weight, target_window)
 
     def _collect_excel_settings(self) -> ExcelSettings:
         return ExcelSettings(
             path=self.excel_path_edit.text().strip(),
             sheet_name=self.sheet_name_edit.text().strip() or "Messwerte",
             column=self.column_edit.text().strip().upper() or "A",
-            start_row=self._parse_int(self.start_row_edit.text(), "Startzeile"),
-            auto_advance=self.auto_advance_checkbox.isChecked(),
-            mode=self.excel_mode_combo.currentData() or EXCEL_MODE_AUTO,
+            start_row=self._parse_int(self.start_row_edit.text(), "Zeile"),
+            direction=self.direction_combo.currentData() or FLOW_DOWN,
+            mode=EXCEL_MODE_AUTO,
         )
 
     def _sync_excel_session(self) -> ExcelSession:
         settings = self._collect_excel_settings()
-        preserve_row = self.excel_session is not None and self.excel_session.settings == settings
-
         if self.excel_session is None:
             self.excel_session = ExcelSession(settings)
         else:
-            self.excel_session.update_settings(settings, preserve_row=preserve_row)
-
-        current_row_text = self.current_row_edit.text().strip()
-        if current_row_text:
-            self.excel_session.reset_row(self._parse_int(current_row_text, "Aktuelle Zeile"))
-        elif settings.path.strip():
-            self.current_row_edit.setText(str(self.excel_session.detect_current_row()))
-        else:
-            self.excel_session.reset_row(settings.start_row)
-            self.current_row_edit.setText(str(self.excel_session.current_row or settings.start_row))
-
-        self._set_next_cell(self.excel_session.preview_cell())
-        self._set_excel_backend(self.excel_session.backend_display_name())
+            self.excel_session.update_settings(settings)
         return self.excel_session
 
-    def _refresh_capture_window_label(self) -> None:
+    def _refresh_auto_capture_hint(self) -> None:
+        try:
+            target_weight = self._parse_float(self.target_weight_edit.text(), "Zielgewicht")
+            target_window = self._parse_float(self.target_window_edit.text(), "Abweichung")
+            settings = build_capture_settings(target_weight, target_window)
+            self.auto_capture_hint.setText(
+                f"{settings.stable_samples} Wiederholungen, Start-Toleranz {settings.base_stability_tolerance:.3f} g, danach adaptiv."
+            )
+        except ValueError:
+            self.auto_capture_hint.setText("Start-Toleranz wird intern gesetzt.")
+
+    def _refresh_target_range_display(self) -> None:
+        try:
+            target_weight = self._parse_float(self.target_weight_edit.text(), "Zielgewicht")
+            target_window = self._parse_float(self.target_window_edit.text(), "Abweichung")
+        except ValueError:
+            self.target_range_value.setText("--")
+            return
+
+        lower = target_weight - target_window
+        upper = target_weight + target_window
+        self.target_range_value.setText(f"{lower:.2f} bis {upper:.2f} g")
+
+    def _update_source_mode_ui(self) -> None:
+        mode = self._selected_source_mode()
+        is_simulation = mode == SOURCE_MODE_SIMULATION
+        self.serial_config_panel.setVisible(not is_simulation)
+        self.simulation_config_panel.setVisible(is_simulation)
+
+        if self.scale_source is None:
+            self.connection_note_label.setText(self._idle_connection_text())
+            self.active_source_value.setText(self._active_source_preview())
+
+        if is_simulation:
+            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
+            self.simulation_hint_label.setText(
+                f"Virtuelle Waage aktiv. Profil: {profile}. Ideal für Live-Wert, Stabilität und Excel-Tests."
+            )
+        self._refresh_logging_format_display()
+        self._refresh_runtime_inputs()
+
+    def _selected_source_mode(self) -> str:
+        return self.source_mode_combo.currentData() or SOURCE_MODE_SERIAL
+
+    def _selected_port(self) -> str:
+        if self.manual_port_override:
+            return self.manual_port_combo.currentText().strip()
+        return self.detected_port or self.manual_port_combo.currentText().strip()
+
+    def _active_source_preview(self) -> str:
+        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
+            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
+            return f"SIMULATED_SCALE | {profile}"
+        return self._selected_port() or "--"
+
+    def _source_runtime_name(self, source: ScaleSource) -> str:
+        if isinstance(source, SimulatedScaleSource):
+            return f"Simulation ({simulation_profile_label(source.profile)})"
+        return source.current_port_name
+
+    def _idle_connection_text(self) -> str:
+        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
+            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
+            return f"Simulation bereit: {profile}."
+        if self.detected_port:
+            return f"Waage bereit auf {self.detected_port}."
+        return "Quelle noch nicht gestartet."
+
+    def _current_target_weight_or_none(self) -> float | None:
+        text = self.target_weight_edit.text().strip()
+        if not text:
+            return None
+        try:
+            return self._parse_float(text, "Zielgewicht")
+        except ValueError:
+            return None
+
+    def _target_instruction_text(self) -> str:
         bounds = self.capture_engine.window_bounds()
         if bounds is None:
-            text = f"frei ab {self.capture_engine.settings.minimum_weight:.2f}"
-        else:
-            text = f"{bounds[0]:.2f} bis {bounds[1]:.2f}"
-        self.capture_window_value.setText(text)
+            return "Lege ein neues Bauteil auf."
+
+        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
+            return (
+                f"Simulation arbeitet im Bereich {bounds[0]:.2f} bis {bounds[1]:.2f} g. "
+                "Live-Wert und Stabilität können jetzt getestet werden."
+            )
+        return f"Lege ein Bauteil im Bereich {bounds[0]:.2f} bis {bounds[1]:.2f} g auf."
+
+    def _set_running_state(self, running: bool) -> None:
+        show_setup_panel = self.source_control_state in {SOURCE_CONTROL_IDLE, SOURCE_CONTROL_PAUSED}
+        self.connection_setup_panel.setVisible(self.source_control_state == SOURCE_CONTROL_IDLE)
+        self.active_source_panel.setVisible(self.source_control_state != SOURCE_CONTROL_IDLE)
+        self.setup_panel.setVisible(show_setup_panel)
+        self.left_scroll.setMaximumWidth(580 if show_setup_panel else 520)
+        self._refresh_source_controls()
+        self._refresh_runtime_inputs()
+
+    def _refresh_runtime_inputs(self) -> None:
+        allow_edit = self.source_control_state in {SOURCE_CONTROL_IDLE, SOURCE_CONTROL_PAUSED}
+
+        for widget in (
+            self.sheet_name_edit,
+        ):
+            widget.setEnabled(allow_edit)
+
+        self._refresh_excel_file_ui()
+        self.browse_excel_button.setEnabled(allow_edit)
+        self.column_edit.setEnabled(allow_edit)
+        self.start_row_edit.setEnabled(allow_edit)
+        self.direction_combo.setEnabled(allow_edit)
+        self.target_weight_edit.setEnabled(allow_edit)
+        self.target_window_edit.setEnabled(allow_edit)
 
     def _parse_float(self, value: str, label: str) -> float:
         try:
             return float(value.strip().replace(",", "."))
         except ValueError as exc:
-            raise ValueError(f"{label} ist keine gueltige Zahl.") from exc
+            raise ValueError(f"{label} ist keine gültige Zahl.") from exc
 
     def _parse_int(self, value: str, label: str) -> int:
         try:
             number = int(value.strip())
         except ValueError as exc:
-            raise ValueError(f"{label} ist keine gueltige ganze Zahl.") from exc
+            raise ValueError(f"{label} ist keine gültige ganze Zahl.") from exc
 
         if number < 1:
-            raise ValueError(f"{label} muss groesser als 0 sein.")
+            raise ValueError(f"{label} muss größer als 0 sein.")
         return number
 
-    def _set_status(self, text: str) -> None:
-        self.status_label.setText(text)
-        self.window_detail_metric.setText(text)
-
-    def _set_connection_state(self, text: str) -> None:
-        self.connection_status_label.setText(text)
-        self.connection_detail_metric.setText(text)
-
-    def _set_capture_state(self, text: str) -> None:
-        self.capture_state_detail.setText(text)
+    def _set_stage(self, title: str, detail: str) -> None:
+        self.stage_label.setText(title)
+        self.stage_copy_label.setText(detail)
 
     def _set_live_weight(self, value_text: str, unit_text: str) -> None:
         self.live_weight_value.setText(value_text)
-        self.live_weight_detail.setText(unit_text)
+        self.live_weight_detail.setText(unit_text.upper())
 
     def _set_pending_value(self, text: str) -> None:
         self.pending_value_label.setText(text)
 
     def _set_next_cell(self, text: str) -> None:
         self.next_cell_value.setText(text)
-        self.next_cell_metric_value.setText(text)
+        self.next_cell_detail_label.setText("Nächster Excel-Eintrag")
 
-    def _set_excel_backend(self, text: str) -> None:
-        self.excel_backend_label.setText(text)
+    def _set_next_cell_position(self, column: str, row: int) -> None:
+        self._set_next_cell(build_cell_ref(column, row))
+        self._sync_excel_cursor_inputs(column, row)
 
-    def _set_raw_text(self, text: str) -> None:
-        self.raw_value_label.setText(text)
+    def _sync_excel_cursor_inputs(self, column: str, row: int) -> None:
+        self._syncing_excel_cursor = True
+        try:
+            self.column_edit.blockSignals(True)
+            self.start_row_edit.blockSignals(True)
+            self.column_edit.setText(column)
+            self.start_row_edit.setText(str(row))
+        finally:
+            self.column_edit.blockSignals(False)
+            self.start_row_edit.blockSignals(False)
+            self._syncing_excel_cursor = False
+
+    def _set_backend(self, text: str) -> None:
+        self.backend_value.setText(text)
+
+    def _refresh_logging_format_display(self) -> None:
+        self.logging_format_value.setText(self.direction_combo.currentText() or "--")
+
+    def _ensure_gram_unit(self, unit_text: str) -> bool:
+        normalized = unit_text.strip().upper()
+        if normalized in {"G", "GR", "GM"}:
+            return True
+
+        unit_display = normalized or "ohne Einheit"
+
+        if self._unit_error == unit_display:
+            return False
+
+        self._unit_error = unit_display
+        source_unit_text = f"in {unit_display}" if normalized else unit_display
+        message = (
+            f"Die Waage sendet aktuell {source_unit_text}. "
+            "Bitte die Einheit an der Waage auf Gramm (g) umstellen."
+        )
+        self.paused = True
+        if self.scale_source is not None:
+            self._set_source_control_state(SOURCE_CONTROL_PAUSED)
+            self._set_running_state(True)
+        self.pending_detail_label.setText("Einheit prüfen")
+        self._set_stage("Einheit prüfen", message)
+        self.connection_note_label.setText(message)
+        self._log(f"Einheiten-Fehler: {message}")
+        QMessageBox.warning(self, "Einheit prüfen", message)
+        return False
 
     def _log(self, message: str) -> None:
         self.log_view.appendPlainText(message)
@@ -839,66 +1372,58 @@ class ScaleLoggerWindow(QMainWindow):
     def _load_settings(self) -> None:
         data = self.settings_store.load()
         if not data:
-            self.simulate_checkbox.setChecked(True)
-            default_mode_index = self.excel_mode_combo.findData(EXCEL_MODE_AUTO)
-            if default_mode_index >= 0:
-                self.excel_mode_combo.setCurrentIndex(default_mode_index)
-            self._update_source_inputs()
-            self._refresh_excel_backend_hint()
+            direction_index = self.direction_combo.findData(FLOW_DOWN)
+            if direction_index >= 0:
+                self.direction_combo.setCurrentIndex(direction_index)
             return
 
-        self.port_combo.setCurrentText(data.get("port", ""))
-        self.baudrate_edit.setText(str(data.get("baudrate", "9600")))
-        self.simulate_checkbox.setChecked(bool(data.get("simulate", True)))
+        source_mode = str(data.get("source_mode", SOURCE_MODE_SERIAL))
+        source_mode_index = self.source_mode_combo.findData(source_mode)
+        if source_mode_index >= 0:
+            self.source_mode_combo.setCurrentIndex(source_mode_index)
+
+        sim_profile = str(data.get("simulation_profile", SIM_PROFILE_STABLE))
+        sim_profile_index = self.simulation_profile_combo.findData(sim_profile)
+        if sim_profile_index >= 0:
+            self.simulation_profile_combo.setCurrentIndex(sim_profile_index)
+
+        self.manual_port_override = bool(data.get("manual_port_override", False))
+        self._saved_manual_port = str(data.get("manual_port", data.get("port", "")))
 
         self.target_weight_edit.setText(str(data.get("target_weight", "12.50")))
         self.target_window_edit.setText(str(data.get("target_window", "0.50")))
-        self.stability_tolerance_edit.setText(str(data.get("stability_tolerance", "0.05")))
-        self.stable_samples_edit.setText(str(data.get("stable_samples", "6")))
-        self.rearm_threshold_edit.setText(str(data.get("rearm_threshold", "0.10")))
-        self.minimum_weight_edit.setText(str(data.get("minimum_weight", "0.05")))
-        self.require_confirmation_checkbox.setChecked(bool(data.get("require_confirmation", False)))
 
         self.excel_path_edit.setText(str(data.get("excel_path", "")))
-        excel_mode = str(data.get("excel_mode", EXCEL_MODE_AUTO))
-        excel_mode_index = self.excel_mode_combo.findData(excel_mode)
-        if excel_mode_index >= 0:
-            self.excel_mode_combo.setCurrentIndex(excel_mode_index)
         self.sheet_name_edit.setText(str(data.get("sheet_name", "Messwerte")))
         self.column_edit.setText(str(data.get("column", "A")))
         self.start_row_edit.setText(str(data.get("start_row", "2")))
-        self.current_row_edit.setText(str(data.get("current_row", "2")))
-        self.auto_advance_checkbox.setChecked(bool(data.get("auto_advance", True)))
-        self._update_source_inputs()
-        self._refresh_excel_backend_hint()
+
+        direction = str(data.get("direction", FLOW_DOWN))
+        direction_index = self.direction_combo.findData(direction)
+        if direction_index >= 0:
+            self.direction_combo.setCurrentIndex(direction_index)
 
     def _save_settings(self) -> None:
         self.settings_store.save(
             {
-                "port": self.port_combo.currentText().strip(),
-                "baudrate": self.baudrate_edit.text().strip(),
-                "simulate": self.simulate_checkbox.isChecked(),
+                "source_mode": self._selected_source_mode(),
+                "simulation_profile": self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE,
+                "manual_port_override": self.manual_port_override,
+                "manual_port": self.manual_port_combo.currentText().strip(),
                 "target_weight": self.target_weight_edit.text().strip(),
                 "target_window": self.target_window_edit.text().strip(),
-                "stability_tolerance": self.stability_tolerance_edit.text().strip(),
-                "stable_samples": self.stable_samples_edit.text().strip(),
-                "rearm_threshold": self.rearm_threshold_edit.text().strip(),
-                "minimum_weight": self.minimum_weight_edit.text().strip(),
-                "require_confirmation": self.require_confirmation_checkbox.isChecked(),
                 "excel_path": self.excel_path_edit.text().strip(),
-                "excel_mode": self.excel_mode_combo.currentData() or EXCEL_MODE_AUTO,
                 "sheet_name": self.sheet_name_edit.text().strip(),
                 "column": self.column_edit.text().strip(),
                 "start_row": self.start_row_edit.text().strip(),
-                "current_row": self.current_row_edit.text().strip(),
-                "auto_advance": self.auto_advance_checkbox.isChecked(),
+                "direction": self.direction_combo.currentData() or FLOW_DOWN,
             }
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._save_settings()
-        if self.stream_worker is not None:
-            self.stream_worker.stop()
+        if self.scale_source is not None:
+            self.scale_source.stop()
         super().closeEvent(event)
 
 

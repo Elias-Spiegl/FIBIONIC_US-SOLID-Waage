@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-import os
 
 from openpyxl import load_workbook
 
@@ -15,11 +15,11 @@ from fibionic_scale_app.excel_writer import (
     ExcelSession,
     LiveExcelUnavailableError,
 )
-from fibionic_scale_app.models import ExcelSettings
+from fibionic_scale_app.models import ExcelSettings, FLOW_RIGHT
 
 
 class ExcelSessionTests(unittest.TestCase):
-    def test_writes_value_to_configured_cell_and_advances_row(self) -> None:
+    def test_writes_value_to_first_empty_row_and_detects_next_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "messwerte.xlsx"
             session = ExcelSession(
@@ -28,22 +28,22 @@ class ExcelSessionTests(unittest.TestCase):
                     sheet_name="Produktion",
                     column="F",
                     start_row=3,
-                    auto_advance=True,
                     mode=EXCEL_MODE_FILE,
                 )
             )
 
-            session.reset_row(3)
             result = session.write_value(12.34)
+            next_column, next_row = session.detect_current_cell()
 
             workbook = load_workbook(path)
             worksheet = workbook["Produktion"]
             self.assertEqual(worksheet["F3"].value, 12.34)
             self.assertEqual(result.cell, "F3")
-            self.assertEqual(session.current_row, 4)
+            self.assertEqual(next_column, "F")
+            self.assertEqual(next_row, 4)
             workbook.close()
 
-    def test_detects_first_empty_row(self) -> None:
+    def test_detects_first_empty_column_for_horizontal_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "messwerte.xlsx"
             session = ExcelSession(
@@ -51,17 +51,25 @@ class ExcelSessionTests(unittest.TestCase):
                     path=str(path),
                     sheet_name="Produktion",
                     column="B",
-                    start_row=2,
-                    auto_advance=True,
+                    start_row=4,
+                    direction=FLOW_RIGHT,
                     mode=EXCEL_MODE_FILE,
                 )
             )
-            session.reset_row(2)
-            session.write_value(1.23)
-            session.write_value(4.56)
 
-            detected = ExcelSession(session.settings).detect_current_row()
-            self.assertEqual(detected, 4)
+            first = session.write_value(1.23)
+            second = session.write_value(4.56)
+            next_column, next_row = session.detect_current_cell()
+
+            workbook = load_workbook(path)
+            worksheet = workbook["Produktion"]
+            self.assertEqual(worksheet["B4"].value, 1.23)
+            self.assertEqual(worksheet["C4"].value, 4.56)
+            self.assertEqual(first.cell, "B4")
+            self.assertEqual(second.cell, "C4")
+            self.assertEqual(next_column, "D")
+            self.assertEqual(next_row, 4)
+            workbook.close()
 
     def test_auto_mode_falls_back_to_file_writer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -72,24 +80,26 @@ class ExcelSessionTests(unittest.TestCase):
                     sheet_name="Produktion",
                     column="C",
                     start_row=2,
-                    auto_advance=True,
                     mode=EXCEL_MODE_AUTO,
                 )
             )
-            session.reset_row(2)
 
             with patch.object(
                 LIVE_BACKEND,
-                "write_value",
+                "detect_current_cell",
                 side_effect=LiveExcelUnavailableError("Excel nicht erreichbar"),
             ):
-                result = session.write_value(7.89)
+                with patch.object(
+                    LIVE_BACKEND,
+                    "write_value",
+                    side_effect=LiveExcelUnavailableError("Excel nicht erreichbar"),
+                ):
+                    result = session.write_value(7.89)
 
             workbook = load_workbook(path)
             worksheet = workbook["Produktion"]
             self.assertEqual(worksheet["C2"].value, 7.89)
             self.assertEqual(result.backend, EXCEL_MODE_FILE)
-            self.assertEqual(session.current_row, 3)
             workbook.close()
 
     def test_live_backend_path_match_is_exact(self) -> None:

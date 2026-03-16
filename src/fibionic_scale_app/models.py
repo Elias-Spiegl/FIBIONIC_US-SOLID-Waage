@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+FLOW_DOWN = "down"
+FLOW_RIGHT = "right"
+
 
 @dataclass(slots=True)
 class Measurement:
@@ -23,10 +26,8 @@ class SerialSettings:
 class CaptureSettings:
     target_weight: float | None = None
     target_window: float = 0.50
-    stability_tolerance: float = 0.05
-    stable_samples: int = 6
-    rearm_threshold: float = 0.10
-    minimum_weight: float = 0.05
+    base_stability_tolerance: float = 0.02
+    stable_samples: int = 10
     require_confirmation: bool = False
 
 
@@ -36,5 +37,5 @@ class ExcelSettings:
     sheet_name: str = "Messwerte"
     column: str = "A"
     start_row: int = 2
-    auto_advance: bool = True
+    direction: str = FLOW_DOWN
     mode: str = "auto"
