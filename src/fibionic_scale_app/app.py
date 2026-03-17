@@ -291,7 +291,7 @@ class ScaleLoggerWindow(QMainWindow):
         excel_buttons_layout.addWidget(self.open_excel_button, 1)
         layout.addWidget(self.excel_buttons_row, 1, 0, 1, 2)
 
-        self.sheet_name_edit = self._line_edit("empty")
+        self.sheet_name_edit = self._line_edit("")
         self.column_edit = self._line_edit("A")
         self.start_row_edit = self._line_edit("1")
         self.sheet_name_edit.editingFinished.connect(self._handle_excel_settings_changed)
@@ -1512,7 +1512,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.target_window_edit.setText(str(data.get("target_window", "1")))
 
         self.excel_path_edit.setText(str(data.get("excel_path", "")))
-        self.sheet_name_edit.setText(str(data.get("sheet_name", "empty")))
+        self.sheet_name_edit.setText(str(data.get("sheet_name", "")))
         self.column_edit.setText(str(data.get("column", "A")))
         self.start_row_edit.setText(str(data.get("start_row", "1")))
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,15 @@ class SettingsStore:
             self.path = Path(config_dir) / "settings.json"
             return
 
-        self.path = Path.home() / ".fibionic-scale" / "settings.json"
+        self.path = self._default_settings_path()
+
+    def _default_settings_path(self) -> Path:
+        if getattr(sys, "frozen", False):
+            base_dir = Path(sys.executable).resolve().parent
+            return base_dir / ".fibionic-scale" / "settings.json"
+
+        project_root = Path(__file__).resolve().parents[2]
+        return project_root / ".fibionic-scale" / "settings.json"
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
