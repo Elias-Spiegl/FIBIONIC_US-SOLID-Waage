@@ -4,8 +4,8 @@ import queue
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -35,6 +35,7 @@ from .excel_writer import (
 )
 from .models import ExcelSettings, FLOW_DOWN, SerialSettings
 from .serial_io import (
+    auto_detectable_serial_ports,
     SIM_PROFILE_STABLE,
     SOURCE_MODE_SERIAL,
     SOURCE_MODE_SIMULATION,
@@ -44,6 +45,7 @@ from .serial_io import (
     StreamEvent,
     list_serial_ports,
     preferred_serial_port,
+    verified_serial_port,
     simulation_profile_label,
     simulation_profile_options,
     source_mode_options,
@@ -87,6 +89,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.excel_session: ExcelSession | None = None
         self.available_ports: list[str] = []
         self.detected_port = ""
+        self.verified_port = ""
         self.manual_port_override = False
         self.paused = False
         self.last_excel_error: str | None = None
@@ -187,7 +190,6 @@ class ScaleLoggerWindow(QMainWindow):
         setup_layout.setContentsMargins(0, 0, 0, 0)
         setup_layout.setSpacing(8)
 
-        setup_layout.addWidget(self._field_label("Quelle"))
         self.source_mode_combo, source_shell = self._combo_field()
         for value, label in source_mode_options():
             self.source_mode_combo.addItem(label, value)
@@ -200,21 +202,20 @@ class ScaleLoggerWindow(QMainWindow):
         serial_layout.setHorizontalSpacing(8)
         serial_layout.setVerticalSpacing(6)
 
-        serial_layout.addWidget(self._field_label("Automatisch erkannt"), 0, 0, 1, 2)
         self.detected_port_label = QLabel("Noch keine Waage erkannt")
         self.detected_port_label.setObjectName("InlineValue")
         self.detected_port_label.setWordWrap(True)
-        serial_layout.addWidget(self.detected_port_label, 1, 0, 1, 2)
+        serial_layout.addWidget(self.detected_port_label, 0, 0, 1, 2)
 
-        self.refresh_ports_button = self._soft_button("Ports neu suchen", self.refresh_ports)
+        self.auto_port_button = self._soft_button("Automatisch erkennen", self.use_auto_port_selection)
         self.manual_port_button = self._soft_button("Port manuell wählen", self.toggle_manual_port_selection)
-        serial_layout.addWidget(self.refresh_ports_button, 2, 0)
-        serial_layout.addWidget(self.manual_port_button, 2, 1)
+        serial_layout.addWidget(self.auto_port_button, 1, 0)
+        serial_layout.addWidget(self.manual_port_button, 1, 1)
 
         self.manual_port_combo, self.manual_port_shell = self._combo_field(editable=True)
         if self.manual_port_combo.lineEdit() is not None:
             self.manual_port_combo.lineEdit().setPlaceholderText("/dev/cu.usbserial-130")
-        serial_layout.addWidget(self.manual_port_shell, 3, 0, 1, 2)
+        serial_layout.addWidget(self.manual_port_shell, 2, 0, 1, 2)
         setup_layout.addWidget(self.serial_config_panel)
 
         self.simulation_config_panel = QWidget()
@@ -245,7 +246,6 @@ class ScaleLoggerWindow(QMainWindow):
         active_layout = QVBoxLayout(self.active_source_panel)
         active_layout.setContentsMargins(0, 0, 0, 0)
         active_layout.setSpacing(4)
-        active_layout.addWidget(self._field_label("Aktive Quelle"))
         self.active_source_value = QLabel("--")
         self.active_source_value.setObjectName("InlineValue")
         self.active_source_value.setWordWrap(True)
@@ -313,8 +313,15 @@ class ScaleLoggerWindow(QMainWindow):
         self.excel_file_name_label.setWordWrap(True)
         layout.addWidget(self.excel_file_name_label, 0, 0, 1, 2)
 
+        self.excel_buttons_row = QWidget()
+        excel_buttons_layout = QHBoxLayout(self.excel_buttons_row)
+        excel_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        excel_buttons_layout.setSpacing(8)
         self.browse_excel_button = self._soft_button("Datei auswählen", self.browse_excel_file)
-        layout.addWidget(self.browse_excel_button, 1, 0, 1, 2)
+        self.open_excel_button = self._soft_button("Datei öffnen", self.open_excel_file)
+        excel_buttons_layout.addWidget(self.browse_excel_button, 1)
+        excel_buttons_layout.addWidget(self.open_excel_button, 1)
+        layout.addWidget(self.excel_buttons_row, 1, 0, 1, 2)
 
         self.sheet_name_edit = self._line_edit("Messwerte")
         self.column_edit = self._line_edit("A")
@@ -785,13 +792,18 @@ class ScaleLoggerWindow(QMainWindow):
 
     def refresh_ports(self) -> None:
         manual_text = self._saved_manual_port or self.manual_port_combo.currentText().strip()
-        ports = list_serial_ports()
-        if manual_text and manual_text not in ports:
-            ports.append(manual_text)
+        system_ports = sorted(list_serial_ports())
+        auto_ports = auto_detectable_serial_ports(system_ports)
 
-        self.available_ports = sorted(ports)
-        self.detected_port = preferred_serial_port(self.available_ports) or ""
-        self.detected_port_label.setText(self.detected_port or "Keine Waage gefunden")
+        self.available_ports = system_ports.copy()
+        self.verified_port = verified_serial_port(auto_ports) or ""
+        self.detected_port = self.verified_port or preferred_serial_port(auto_ports) or ""
+        if self.verified_port:
+            self.detected_port_label.setText(f"{self.verified_port} (verifiziert)")
+        elif self.detected_port:
+            self.detected_port_label.setText(f"{self.detected_port} (Vorschlag)")
+        else:
+            self.detected_port_label.setText("Keine Waage gefunden")
 
         self.manual_port_combo.clear()
         self.manual_port_combo.addItems(self.available_ports)
@@ -800,21 +812,45 @@ class ScaleLoggerWindow(QMainWindow):
         elif self.detected_port:
             self.manual_port_combo.setCurrentText(self.detected_port)
 
-        has_multiple_ports = len(self.available_ports) > 1
-        self.manual_port_button.setVisible(has_multiple_ports or not self.detected_port)
-        self.manual_port_shell.setVisible(self.manual_port_override and (has_multiple_ports or not self.detected_port))
-        self.manual_port_button.setText("Automatik nutzen" if self.manual_port_override else "Port manuell wählen")
+        self.auto_port_button.setVisible(True)
+        self.manual_port_button.setVisible(True)
+        self.manual_port_shell.setVisible(self.manual_port_override)
 
         if self.scale_source is None:
             self.active_source_value.setText(self._active_source_preview())
 
-        if self._selected_source_mode() == SOURCE_MODE_SERIAL and not self.detected_port and not self.manual_port_override:
-            self.connection_note_label.setText("Keine Waage automatisch gefunden. Bei Bedarf den Port manuell wählen.")
+        if self._selected_source_mode() != SOURCE_MODE_SERIAL or self.scale_source is not None:
+            return
+
+        if self.verified_port and not self.manual_port_override:
+            self.connection_note_label.setText("Waage automatisch erkannt und am Datenformat verifiziert.")
+        elif self.detected_port and not self.manual_port_override:
+            self.connection_note_label.setText(
+                "Port automatisch vorgeschlagen. Wenn nötig kannst du ihn manuell überschreiben."
+            )
+        elif not self.detected_port and not self.manual_port_override:
+            self.connection_note_label.setText("Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen.")
 
     def toggle_manual_port_selection(self) -> None:
-        self.manual_port_override = not self.manual_port_override
+        self.manual_port_override = True
         self._saved_manual_port = self.manual_port_combo.currentText().strip()
         self.refresh_ports()
+
+    def use_auto_port_selection(self) -> None:
+        self.detected_port_label.setText("Port der Waage wird gesucht ...")
+        self.connection_note_label.setText("Suche nach einer angeschlossenen Waage ...")
+        self.auto_port_button.setEnabled(False)
+        self.manual_port_button.setEnabled(False)
+        self.manual_port_override = False
+        QApplication.processEvents()
+        QTimer.singleShot(1000, self._finish_auto_port_selection)
+
+    def _finish_auto_port_selection(self) -> None:
+        try:
+            self.refresh_ports()
+        finally:
+            self.auto_port_button.setEnabled(True)
+            self.manual_port_button.setEnabled(True)
 
     def browse_excel_file(self) -> None:
         start_path = self.excel_path_edit.text().strip() or str(Path.cwd())
@@ -834,6 +870,20 @@ class ScaleLoggerWindow(QMainWindow):
 
         self.excel_path_edit.setText(path)
         self._handle_excel_settings_changed()
+
+    def open_excel_file(self) -> None:
+        path_text = self.excel_path_edit.text().strip()
+        if not path_text:
+            QMessageBox.information(self, "Excel-Datei", "Bitte zuerst eine Excel-Datei auswählen.")
+            return
+
+        path = Path(path_text).expanduser()
+        if not path.exists():
+            QMessageBox.warning(self, "Excel-Datei", "Die ausgewählte Excel-Datei wurde nicht gefunden.")
+            return
+
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "Excel-Datei", "Die Excel-Datei konnte nicht geöffnet werden.")
 
     def _handle_primary_source_action(self) -> None:
         if self.source_control_state == SOURCE_CONTROL_IDLE:
@@ -966,8 +1016,6 @@ class ScaleLoggerWindow(QMainWindow):
         self._set_next_cell_position(column, row)
         self._set_backend(session.backend_display_name())
         self._refresh_logging_format_display()
-        if self.scale_source is None:
-            self.connection_note_label.setText(f"Excel-Ziel bereit: {build_cell_ref(column, row)}")
         self._save_settings()
 
     def _handle_excel_settings_changed(self) -> None:
@@ -1003,6 +1051,8 @@ class ScaleLoggerWindow(QMainWindow):
         self.excel_file_name_label.setVisible(has_file)
         self.browse_excel_button.setVisible((not has_file) or allow_file_change)
         self.browse_excel_button.setText("Datei ändern" if has_file else "Datei auswählen")
+        self.open_excel_button.setVisible(has_file)
+        self.open_excel_button.setEnabled(has_file)
 
     def _apply_runtime_target_changes(self) -> None:
         try:
@@ -1191,7 +1241,7 @@ class ScaleLoggerWindow(QMainWindow):
     def _collect_serial_settings(self) -> SerialSettings:
         port = self._selected_port()
         if not port:
-            raise ValueError("Keine Waage gefunden. Bitte Port neu suchen oder den Port manuell auswählen.")
+            raise ValueError("Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen.")
 
         return SerialSettings(port=port, baudrate=9600, timeout=1.0)
 
@@ -1253,6 +1303,9 @@ class ScaleLoggerWindow(QMainWindow):
         self.serial_config_panel.setVisible(not is_simulation)
         self.simulation_config_panel.setVisible(is_simulation)
 
+        if not is_simulation and self.scale_source is None:
+            self.refresh_ports()
+
         if self.scale_source is None:
             self.connection_note_label.setText(self._idle_connection_text())
             self.active_source_value.setText(self._active_source_preview())
@@ -1290,7 +1343,7 @@ class ScaleLoggerWindow(QMainWindow):
             return f"Simulation bereit: {profile}."
         if self.detected_port:
             return f"Waage bereit auf {self.detected_port}."
-        return "Quelle noch nicht gestartet."
+        return "Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen."
 
     def _current_target_weight_or_none(self) -> float | None:
         text = self.target_weight_edit.text().strip()

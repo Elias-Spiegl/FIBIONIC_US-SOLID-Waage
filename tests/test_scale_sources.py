@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import patch
 
 from fibionic_scale_app.serial_io import (
+    auto_detectable_serial_ports,
     SIM_PROFILE_BELOW,
     SIM_PROFILE_NOISY,
     SIM_PROFILE_STABLE,
     SimulationConfig,
     SimulatedScaleSource,
+    probe_serial_port,
     preferred_serial_port,
+    verified_serial_port,
 )
 
 
@@ -17,6 +21,10 @@ class ScaleSourceTests(unittest.TestCase):
     def test_preferred_serial_port_prefers_usb_devices(self) -> None:
         ports = ["/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.usbserial-130", "/dev/tty.debug"]
         self.assertEqual(preferred_serial_port(ports), "/dev/cu.usbserial-130")
+
+    def test_auto_detectable_serial_ports_excludes_bluetooth(self) -> None:
+        ports = ["/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.usbserial-130", "/dev/cu.debug"]
+        self.assertEqual(auto_detectable_serial_ports(ports), ["/dev/cu.usbserial-130"])
 
     def test_simulated_source_emits_connected_and_measurements(self) -> None:
         source = SimulatedScaleSource(
@@ -51,6 +59,90 @@ class ScaleSourceTests(unittest.TestCase):
 
         self.assertTrue(received_connected)
         self.assertTrue(received_measurement)
+
+    def test_verified_serial_port_prefers_first_port_with_valid_scale_frame(self) -> None:
+        with patch("fibionic_scale_app.serial_io.probe_serial_port") as probe:
+            probe.side_effect = lambda device, **_: device == "/dev/cu.usbserial-130"
+            verified = verified_serial_port(
+                ["/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.usbserial-130", "/dev/cu.other"]
+            )
+
+        self.assertEqual(verified, "/dev/cu.usbserial-130")
+
+    def test_probe_serial_port_accepts_expected_gram_frame(self) -> None:
+        class DummySerial:
+            EIGHTBITS = 8
+            PARITY_NONE = "N"
+            STOPBITS_ONE = 1
+
+            class Serial:
+                def __init__(self, **kwargs):
+                    self.lines = [b"+    44.00g\r\n", b"+    44.00g\r\n"]
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def reset_input_buffer(self):
+                    return None
+
+                def readline(self):
+                    return self.lines.pop(0) if self.lines else b""
+
+        with patch.dict("sys.modules", {"serial": DummySerial}):
+            self.assertTrue(probe_serial_port("/dev/cu.usbserial-130", probe_window=0.01))
+
+    def test_probe_serial_port_rejects_unexpected_unit(self) -> None:
+        class DummySerial:
+            EIGHTBITS = 8
+            PARITY_NONE = "N"
+            STOPBITS_ONE = 1
+
+            class Serial:
+                def __init__(self, **kwargs):
+                    self.lines = [b"+    44.00kg\r\n", b"+    44.00kg\r\n"]
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def reset_input_buffer(self):
+                    return None
+
+                def readline(self):
+                    return self.lines.pop(0) if self.lines else b""
+
+        with patch.dict("sys.modules", {"serial": DummySerial}):
+            self.assertFalse(probe_serial_port("/dev/cu.usbserial-130", probe_window=0.01))
+
+    def test_probe_serial_port_rejects_frames_without_explicit_gram_unit(self) -> None:
+        class DummySerial:
+            EIGHTBITS = 8
+            PARITY_NONE = "N"
+            STOPBITS_ONE = 1
+
+            class Serial:
+                def __init__(self, **kwargs):
+                    self.lines = [b"+    44.00\r\n", b"+    44.00\r\n"]
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+                def reset_input_buffer(self):
+                    return None
+
+                def readline(self):
+                    return self.lines.pop(0) if self.lines else b""
+
+        with patch.dict("sys.modules", {"serial": DummySerial}):
+            self.assertFalse(probe_serial_port("/dev/cu.usbserial-130", probe_window=0.01))
 
     def test_below_target_profile_stays_below_target(self) -> None:
         source = SimulatedScaleSource(profile=SIM_PROFILE_BELOW, target_weight=40.0, seed=7)

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import queue
 import random
+import re
 import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from time import monotonic
 
 from .models import Measurement, SerialSettings
 from .parsing import parse_scale_output
@@ -22,6 +24,9 @@ SIM_PROFILE_RANDOM = "random_batches"
 
 DEFAULT_SIM_INTERVAL = 0.18
 DEFAULT_SIM_TARGET = 12.5
+DEFAULT_PROBE_TIMEOUT = 0.2
+DEFAULT_PROBE_WINDOW = 1.2
+EXPECTED_FRAME_PATTERN = re.compile(r"^[+-]\s*\d+(?:\.\d+)?\s*g$", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -79,6 +84,78 @@ def preferred_serial_port(ports: list[str] | None = None) -> str | None:
         return None
 
     return sorted(candidates, key=_serial_port_rank, reverse=True)[0]
+
+
+def auto_detectable_serial_ports(ports: list[str] | None = None) -> list[str]:
+    candidates = ports if ports is not None else list_serial_ports()
+    return [device for device in candidates if _looks_like_usb_serial_port(device)]
+
+
+def verified_serial_port(
+    ports: list[str] | None = None,
+    baudrate: int = 9600,
+    timeout: float = DEFAULT_PROBE_TIMEOUT,
+    probe_window: float = DEFAULT_PROBE_WINDOW,
+) -> str | None:
+    candidates = auto_detectable_serial_ports(ports)
+    for device in sorted(candidates, key=_serial_port_rank, reverse=True):
+        if probe_serial_port(device, baudrate=baudrate, timeout=timeout, probe_window=probe_window):
+            return device
+    return None
+
+
+def probe_serial_port(
+    device: str,
+    baudrate: int = 9600,
+    timeout: float = DEFAULT_PROBE_TIMEOUT,
+    probe_window: float = DEFAULT_PROBE_WINDOW,
+) -> bool:
+    try:
+        import serial
+    except ImportError:
+        return False
+
+    try:
+        with serial.Serial(
+            port=device,
+            baudrate=baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=timeout,
+        ) as connection:
+            connection.reset_input_buffer()
+            deadline = monotonic() + max(probe_window, timeout)
+            valid_frames = 0
+            while monotonic() < deadline:
+                raw = connection.readline()
+                if not raw:
+                    continue
+                measurement = parse_scale_output(raw.decode("ascii", errors="ignore"))
+                if measurement is None:
+                    continue
+                if _matches_expected_scale_format(measurement):
+                    valid_frames += 1
+                    if valid_frames >= 2:
+                        return True
+    except Exception:
+        return False
+
+    return False
+
+
+def _matches_expected_scale_format(measurement: Measurement) -> bool:
+    raw_text = measurement.raw_text.strip()
+    if not raw_text:
+        return False
+
+    return EXPECTED_FRAME_PATTERN.fullmatch(raw_text) is not None
+
+
+def _looks_like_usb_serial_port(device: str) -> bool:
+    lowered = device.strip().lower()
+    usb_markers = ("usbserial", "usbmodem", "ttyusb", "usb", "acm", "ftdi", "wch", "silab", "ch340")
+    return any(marker in lowered for marker in usb_markers)
 
 
 def _serial_port_rank(device: str) -> tuple[int, int, str]:
