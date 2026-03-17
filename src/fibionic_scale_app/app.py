@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -362,6 +363,27 @@ class ScaleLoggerWindow(QMainWindow):
         copy.addWidget(title)
         layout.addLayout(copy, 1)
 
+        layout.addWidget(self._build_header_mark(), 0)
+
+        return panel
+
+    def _build_header_mark(self) -> QWidget:
+        logo_root = Path(__file__).resolve().parents[2] / "logo"
+        pixmap = self._load_header_logo_pixmap(logo_root)
+        if pixmap is not None:
+            logo_wrap = QWidget()
+            logo_layout = QHBoxLayout(logo_wrap)
+            logo_layout.setContentsMargins(10, 6, 10, 6)
+            logo_layout.setSpacing(0)
+            logo_label = QLabel()
+            logo_label.setObjectName("HeaderLogo")
+            logo_label.setPixmap(
+                pixmap.scaledToHeight(56, Qt.TransformationMode.SmoothTransformation)
+            )
+            logo_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            logo_layout.addWidget(logo_label, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            return logo_wrap
+
         ornament = QWidget()
         ornament_layout = QHBoxLayout(ornament)
         ornament_layout.setContentsMargins(0, 0, 0, 0)
@@ -375,9 +397,52 @@ class ScaleLoggerWindow(QMainWindow):
                 line.setProperty("variant", "signal")
             line.setFixedSize(3, height)
             ornament_layout.addWidget(line)
-        layout.addWidget(ornament, 0)
+        return ornament
 
-        return panel
+    def _load_header_logo_pixmap(self, logo_root: Path) -> QPixmap | None:
+        svg_path = logo_root / "Logo_Fibionic_4c.svg"
+        if svg_path.exists():
+            renderer = QSvgRenderer(str(svg_path))
+            if renderer.isValid():
+                size = renderer.defaultSize()
+                target_height = max(64, size.height() or 64)
+                target_width = max(160, int((size.width() or 220) * (target_height / max(size.height() or 1, 1))))
+                pixmap = QPixmap(target_width, target_height)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                renderer.render(painter)
+                painter.end()
+                return pixmap
+
+        png_path = logo_root / "Logo_Fibionic_4c.png"
+        if png_path.exists():
+            pixmap = QPixmap(str(png_path))
+            if not pixmap.isNull():
+                return self._trim_logo_pixmap(pixmap)
+
+        return None
+
+    def _trim_logo_pixmap(self, pixmap: QPixmap) -> QPixmap:
+        image = pixmap.toImage()
+        min_x = image.width()
+        min_y = image.height()
+        max_x = -1
+        max_y = -1
+
+        for y in range(image.height()):
+            for x in range(image.width()):
+                color = image.pixelColor(x, y)
+                if color.red() > 245 and color.green() > 245 and color.blue() > 245:
+                    continue
+                min_x = min(min_x, x)
+                min_y = min(min_y, y)
+                max_x = max(max_x, x)
+                max_y = max(max_y, y)
+
+        if max_x < min_x or max_y < min_y:
+            return pixmap
+
+        return pixmap.copy(min_x, min_y, (max_x - min_x) + 1, (max_y - min_y) + 1)
 
     def _build_status_panel(self) -> QFrame:
         panel = QFrame()
@@ -600,6 +665,12 @@ class ScaleLoggerWindow(QMainWindow):
                 color: {COLORS["ink"]};
                 border: none;
                 background: transparent;
+            }}
+            QLabel#HeaderLogo {{
+                border: none;
+                background: transparent;
+                padding: 0;
+                margin: 0;
             }}
             QLabel#HeaderCopy {{
                 font-size: 10.5pt;
