@@ -95,11 +95,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.source_control_state = SOURCE_CONTROL_IDLE
         self._syncing_excel_cursor = False
         self._unit_error: str | None = None
-
-        self.flash_timer = QTimer(self)
-        self.flash_timer.setSingleShot(True)
-        self.flash_timer.setInterval(950)
-        self.flash_timer.timeout.connect(self._clear_logged_flash)
+        self._last_logged_value: float | None = None
 
         self._build_ui()
         self._refresh_source_controls()
@@ -125,15 +121,23 @@ class ScaleLoggerWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
 
-        layout = QHBoxLayout(central)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(18)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(16, 12, 16, 12)
+        root_layout.setSpacing(12)
+
+        self.header_panel = self._build_header_panel()
+        root_layout.addWidget(self.header_panel, 0)
+
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(12)
+        root_layout.addLayout(content_layout, 1)
 
         self.left_rail = QFrame()
         self.left_rail.setObjectName("LeftRail")
         left_layout = QVBoxLayout(self.left_rail)
-        left_layout.setContentsMargins(14, 14, 14, 14)
-        left_layout.setSpacing(14)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(10)
 
         self.left_scroll = QScrollArea()
         self.left_scroll.setObjectName("LeftScroll")
@@ -141,23 +145,23 @@ class ScaleLoggerWindow(QMainWindow):
         self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.left_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.left_scroll.setWidget(self.left_rail)
-        self.left_scroll.setMinimumWidth(500)
-        self.left_scroll.setMaximumWidth(580)
+        self.left_scroll.setMinimumWidth(440)
+        self.left_scroll.setMaximumWidth(520)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(14)
+        right_layout.setSpacing(10)
 
-        layout.addWidget(self.left_scroll, 0)
-        layout.addWidget(right_panel, 1)
+        content_layout.addWidget(self.left_scroll, 0)
+        content_layout.addWidget(right_panel, 1)
 
         self.scale_box = self._build_scale_box()
         self.setup_panel = QWidget()
         self.setup_panel.setObjectName("SetupPanel")
         setup_layout = QVBoxLayout(self.setup_panel)
         setup_layout.setContentsMargins(0, 0, 0, 0)
-        setup_layout.setSpacing(14)
+        setup_layout.setSpacing(10)
         self.capture_box = self._build_capture_box()
         self.excel_box = self._build_excel_box()
         setup_layout.addWidget(self.capture_box)
@@ -168,21 +172,20 @@ class ScaleLoggerWindow(QMainWindow):
         left_layout.addWidget(self.setup_panel)
         left_layout.addStretch(1)
 
-        right_layout.addWidget(self._build_header_panel())
         right_layout.addWidget(self._build_status_panel())
         right_layout.addWidget(self._build_monitor_box(), 1)
 
     def _build_scale_box(self) -> QGroupBox:
         box = QGroupBox("Quelle")
         layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(10)
 
         self.connection_setup_panel = QWidget()
         self.connection_setup_panel.setObjectName("ConnectionSetup")
         setup_layout = QVBoxLayout(self.connection_setup_panel)
         setup_layout.setContentsMargins(0, 0, 0, 0)
-        setup_layout.setSpacing(10)
+        setup_layout.setSpacing(8)
 
         setup_layout.addWidget(self._field_label("Quelle"))
         self.source_mode_combo, source_shell = self._combo_field()
@@ -194,8 +197,8 @@ class ScaleLoggerWindow(QMainWindow):
         self.serial_config_panel = QWidget()
         serial_layout = QGridLayout(self.serial_config_panel)
         serial_layout.setContentsMargins(0, 0, 0, 0)
-        serial_layout.setHorizontalSpacing(10)
-        serial_layout.setVerticalSpacing(8)
+        serial_layout.setHorizontalSpacing(8)
+        serial_layout.setVerticalSpacing(6)
 
         serial_layout.addWidget(self._field_label("Automatisch erkannt"), 0, 0, 1, 2)
         self.detected_port_label = QLabel("Noch keine Waage erkannt")
@@ -217,8 +220,8 @@ class ScaleLoggerWindow(QMainWindow):
         self.simulation_config_panel = QWidget()
         simulation_layout = QGridLayout(self.simulation_config_panel)
         simulation_layout.setContentsMargins(0, 0, 0, 0)
-        simulation_layout.setHorizontalSpacing(10)
-        simulation_layout.setVerticalSpacing(8)
+        simulation_layout.setHorizontalSpacing(8)
+        simulation_layout.setVerticalSpacing(6)
 
         simulation_layout.addWidget(self._field_label("Simulationsprofil"), 0, 0)
         self.simulation_profile_combo, simulation_shell = self._combo_field()
@@ -268,9 +271,9 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_capture_box(self) -> QGroupBox:
         box = QGroupBox("Messwerte")
         layout = QGridLayout(box)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(8)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(6)
 
         self.target_weight_edit = self._line_edit("12.50")
         self.target_window_edit = self._line_edit("0.50")
@@ -299,9 +302,9 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_excel_box(self) -> QGroupBox:
         box = QGroupBox("Excel")
         layout = QGridLayout(box)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setHorizontalSpacing(10)
-        layout.setVerticalSpacing(8)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(6)
 
         self.excel_path_edit = QLineEdit()
         self.excel_path_edit.setVisible(False)
@@ -337,8 +340,8 @@ class ScaleLoggerWindow(QMainWindow):
         panel = QFrame()
         panel.setObjectName("HeaderPanel")
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(18)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(14)
 
         copy = QVBoxLayout()
         copy.setSpacing(2)
@@ -374,8 +377,8 @@ class ScaleLoggerWindow(QMainWindow):
         panel.setObjectName("StatusPanel")
         self.status_panel = panel
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(22, 20, 22, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(12)
 
         self.stage_label = QLabel("Bereit")
         self.stage_label.setObjectName("StageLabel")
@@ -386,19 +389,19 @@ class ScaleLoggerWindow(QMainWindow):
         layout.addWidget(self.stage_copy_label)
 
         stats_row = QHBoxLayout()
-        stats_row.setSpacing(12)
+        stats_row.setSpacing(10)
         self.live_weight_value, self.live_weight_detail, self.live_card = self._metric_card("Live-Wert")
         self.pending_value_label, self.pending_detail_label, self.pending_card = self._metric_card("Stabiler Messwert")
         self.next_cell_value, self.next_cell_detail_label, self.next_cell_card = self._metric_card("Nächste Zelle")
-        self._flash_widgets = (self.status_panel, self.pending_card, self.next_cell_card)
+        self._flash_widgets = (self.pending_card,)
         stats_row.addWidget(self.live_card, 1)
         stats_row.addWidget(self.pending_card, 1)
         stats_row.addWidget(self.next_cell_card, 1)
         layout.addLayout(stats_row)
 
         meta = QGridLayout()
-        meta.setHorizontalSpacing(20)
-        meta.setVerticalSpacing(8)
+        meta.setHorizontalSpacing(16)
+        meta.setVerticalSpacing(6)
         meta.addWidget(self._field_label("Zielbereich"), 0, 0)
         self.target_range_value = QLabel("--")
         self.target_range_value.setObjectName("BodyCopy")
@@ -420,15 +423,18 @@ class ScaleLoggerWindow(QMainWindow):
     def _build_monitor_box(self) -> QGroupBox:
         box = QGroupBox("Verlauf")
         layout = QVBoxLayout(box)
-        layout.setContentsMargins(16, 18, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(6)
 
-        controls_row = QHBoxLayout()
-        controls_row.setContentsMargins(0, 0, 0, 0)
-        controls_row.addStretch(1)
-        self.clear_log_button = self._soft_button("Verlauf löschen", self._clear_log_history)
-        controls_row.addWidget(self.clear_log_button, 0)
-        layout.addLayout(controls_row)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+        header_row.addStretch(1)
+
+        self.clear_log_button = self._utility_button("Verlauf löschen", self._clear_log_history)
+        self.clear_log_button.setEnabled(False)
+        header_row.addWidget(self.clear_log_button, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(header_row)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -441,8 +447,8 @@ class ScaleLoggerWindow(QMainWindow):
         card = QFrame()
         card.setObjectName("MetricCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(8)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
 
         title_label = QLabel(title)
         title_label.setObjectName("MetricTitle")
@@ -518,6 +524,14 @@ class ScaleLoggerWindow(QMainWindow):
         button.clicked.connect(handler)
         return button
 
+    def _utility_button(self, text: str, handler) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName("SoftButton")
+        button.setFixedHeight(30)
+        button.setMinimumWidth(148)
+        button.clicked.connect(handler)
+        return button
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             f"""
@@ -551,26 +565,22 @@ class ScaleLoggerWindow(QMainWindow):
                 background: {COLORS["card"]};
             }}
             QFrame#StatusPanel {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {COLORS["card"]}, stop:1 {COLORS["accent_soft"]});
-            }}
-            QFrame#StatusPanel[flashState="success"] {{
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FFFCE8, stop:1 #FFF4A6);
-                border: 1px solid {COLORS["signal_dark"]};
+                background: #D9EEF4;
             }}
             QGroupBox {{
-                margin-top: 18px;
-                padding-top: 20px;
-                font-size: 12.5pt;
+                margin-top: 14px;
+                padding-top: 16px;
+                font-size: 11.5pt;
                 font-weight: 600;
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin;
-                left: 16px;
-                padding: 0 6px;
+                left: 12px;
+                padding: 0 4px;
                 color: {COLORS["ink"]};
             }}
             QLabel#BrandLabel {{
-                font-size: 11pt;
+                font-size: 10pt;
                 font-weight: 500;
                 letter-spacing: 0.5px;
                 color: {COLORS["muted"]};
@@ -578,7 +588,7 @@ class ScaleLoggerWindow(QMainWindow):
                 background: transparent;
             }}
             QLabel#HeaderTitle {{
-                font-size: 26pt;
+                font-size: 22pt;
                 font-weight: 500;
                 color: {COLORS["ink"]};
                 border: none;
@@ -591,34 +601,34 @@ class ScaleLoggerWindow(QMainWindow):
                 background: transparent;
             }}
             QLabel#StageLabel {{
-                font-size: 24pt;
+                font-size: 20pt;
                 font-weight: 500;
                 color: {COLORS["ink"]};
                 border: none;
                 background: transparent;
             }}
             QLabel#StageCopy {{
-                font-size: 11pt;
+                font-size: 10pt;
                 color: {COLORS["muted"]};
                 border: none;
                 background: transparent;
             }}
             QLabel#FieldLabel {{
                 color: {COLORS["muted"]};
-                font-size: 9pt;
+                font-size: 8.5pt;
                 font-weight: 500;
                 border: none;
                 background: transparent;
             }}
             QLabel#MetricTitle {{
                 color: {COLORS["muted"]};
-                font-size: 9pt;
+                font-size: 8.5pt;
                 font-weight: 500;
                 border: none;
                 background: transparent;
             }}
             QLabel#MetricValue {{
-                font-size: 21pt;
+                font-size: 17pt;
                 font-weight: 600;
                 color: {COLORS["ink"]};
                 border: none;
@@ -630,18 +640,18 @@ class ScaleLoggerWindow(QMainWindow):
                 background: transparent;
             }}
             QLabel#InlineValue {{
-                font-size: 14pt;
+                font-size: 12pt;
                 font-weight: 600;
             }}
             QFrame#MetricCard {{
-                background: {COLORS["tile"]};
+                background: {COLORS["card"]};
                 border-radius: 12px;
-                min-height: 128px;
+                min-height: 104px;
                 border: 1px solid {COLORS["line"]};
             }}
             QFrame#MetricCard[flashState="success"] {{
-                background: #FFF7B8;
-                border: 1px solid {COLORS["signal_dark"]};
+                background: #CFEED8;
+                border: 1px solid #4FA36B;
             }}
             QFrame#FieldShell {{
                 background: {COLORS["surface"]};
@@ -652,15 +662,15 @@ class ScaleLoggerWindow(QMainWindow):
                 background: {COLORS["surface"]};
                 border: 1px solid {COLORS["line"]};
                 border-radius: 10px;
-                padding: 8px 10px;
+                padding: 6px 9px;
                 selection-background-color: {COLORS["accent"]};
-                font-size: 10.5pt;
+                font-size: 10pt;
             }}
             QComboBox#FormCombo {{
                 background: transparent;
                 border: none;
-                padding: 2px 2px 2px 10px;
-                min-height: 34px;
+                padding: 1px 2px 1px 8px;
+                min-height: 30px;
                 selection-background-color: {COLORS["accent"]};
             }}
             QComboBox#FormCombo::drop-down {{
@@ -692,12 +702,12 @@ class ScaleLoggerWindow(QMainWindow):
             QToolButton#ComboArrowButton {{
                 background: transparent;
                 border: none;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 34px;
-                padding: 0 8px 0 0;
+                min-width: 24px;
+                max-width: 24px;
+                min-height: 30px;
+                padding: 0 6px 0 0;
                 color: {COLORS["muted"]};
-                font-size: 14pt;
+                font-size: 12pt;
                 font-weight: 600;
             }}
             QToolButton#ComboArrowButton:hover {{
@@ -705,14 +715,16 @@ class ScaleLoggerWindow(QMainWindow):
             }}
             QPlainTextEdit#LogView {{
                 font-family: "SF Mono", "Cascadia Code", monospace;
-                font-size: 9.5pt;
+                background: #FCFDFE;
+                font-size: 9.8pt;
+                padding-top: 8px;
             }}
             QPushButton {{
                 border-radius: 10px;
-                min-height: 38px;
-                padding: 8px 14px;
+                min-height: 30px;
+                padding: 3px 12px;
                 font-weight: 600;
-                font-size: 10.5pt;
+                font-size: 9.5pt;
             }}
             QPushButton#AccentButton {{
                 background: {COLORS["signal"]};
@@ -737,6 +749,25 @@ class ScaleLoggerWindow(QMainWindow):
             }}
             QPushButton#DangerButton:hover {{
                 background: #E35D5D;
+            }}
+            QPushButton#UtilityButton {{
+                background: transparent;
+                color: {COLORS["muted"]};
+                border: 1px solid {COLORS["line"]};
+                border-radius: 9px;
+                min-height: 28px;
+                padding: 3px 12px;
+                font-size: 9pt;
+                font-weight: 500;
+            }}
+            QPushButton#UtilityButton:hover {{
+                background: {COLORS["accent_soft"]};
+                color: {COLORS["accent_dark"]};
+                border: 1px solid {COLORS["accent"]};
+            }}
+            QPushButton#UtilityButton:disabled {{
+                color: #9AA2AB;
+                border: 1px solid #D7DCE2;
             }}
             QFrame#FiberLine {{
                 background: {COLORS["muted"]};
@@ -855,6 +886,8 @@ class ScaleLoggerWindow(QMainWindow):
         self.scale_source = source
         self.paused = False
         self.last_excel_error = None
+        self._last_logged_value = None
+        self._set_logged_feedback_active(False)
         self._set_source_control_state(SOURCE_CONTROL_RUNNING)
         self._set_pending_value("--")
         self.pending_detail_label.setText("Warte auf Treffer")
@@ -907,6 +940,9 @@ class ScaleLoggerWindow(QMainWindow):
         if self.scale_source is not None:
             self.paused = False
             self._set_source_control_state(SOURCE_CONTROL_IDLE)
+            self._last_logged_value = None
+            self._set_logged_feedback_active(False)
+            self._set_pending_value("--")
             self.scale_source.stop()
             self.connection_note_label.setText("Quelle wird gestoppt...")
 
@@ -991,17 +1027,9 @@ class ScaleLoggerWindow(QMainWindow):
 
         self._save_settings()
 
-    def _flash_logged_feedback(self) -> None:
+    def _set_logged_feedback_active(self, active: bool) -> None:
         for widget in self._flash_widgets:
-            widget.setProperty("flashState", "success")
-            widget.style().unpolish(widget)
-            widget.style().polish(widget)
-            widget.update()
-        self.flash_timer.start()
-
-    def _clear_logged_flash(self) -> None:
-        for widget in self._flash_widgets:
-            widget.setProperty("flashState", "")
+            widget.setProperty("flashState", "success" if active else "")
             widget.style().unpolish(widget)
             widget.style().polish(widget)
             widget.update()
@@ -1027,7 +1055,7 @@ class ScaleLoggerWindow(QMainWindow):
                 self._source_runtime_name(self.scale_source) if self.scale_source else "--"
             )
             self._set_stage("Warte auf neues Bauteil", self._target_instruction_text())
-            self._log(event.message)
+            self._log(f"Quelle verbunden: {event.message}")
             return
 
         if event.kind == "measurement" and event.measurement is not None:
@@ -1041,7 +1069,7 @@ class ScaleLoggerWindow(QMainWindow):
         if event.kind == "error":
             self._set_stage("Fehler", event.message)
             self.connection_note_label.setText(event.message)
-            self._log(f"Fehler: {event.message}")
+            self._log(f"Fehlermeldung: {event.message}")
             if self._selected_source_mode() == SOURCE_MODE_SERIAL:
                 QMessageBox.critical(self, "Serielle Verbindung", event.message)
             return
@@ -1058,7 +1086,7 @@ class ScaleLoggerWindow(QMainWindow):
                 "Bereit zum Start",
                 "Die Einstellungen sind wieder sichtbar. Für die nächste Serie einfach erneut anschalten.",
             )
-            self._log("Quelle gestoppt.")
+            self._log("Quelle wurde gestoppt.")
             self.refresh_ports()
 
     def _handle_measurement(self, event: StreamEvent) -> None:
@@ -1071,6 +1099,7 @@ class ScaleLoggerWindow(QMainWindow):
 
         self._unit_error = None
         self._set_live_weight(f"{measurement.value:.3f}", measurement.unit or "g")
+        self._clear_logged_feedback_if_value_changed(measurement.value)
 
         if self.paused:
             return
@@ -1082,7 +1111,7 @@ class ScaleLoggerWindow(QMainWindow):
             self._log("Bauteil entfernt. Nächste Wägung ist bereit.")
 
         if state.new_candidate is not None:
-            self._log(f"Stabiler Wert erkannt: {state.new_candidate:.3f}")
+            self._log(f"Stabiler Messwert erkannt: {state.new_candidate:.3f} g")
 
         if self.capture_engine.peek_pending_capture() is not None:
             self._write_pending_capture(auto=True)
@@ -1146,9 +1175,10 @@ class ScaleLoggerWindow(QMainWindow):
         self._set_backend(session.backend_display_name())
         self._set_stage("Messwert gespeichert", f"{result.sheet_name}!{result.cell} wurde beschrieben. Bitte Bauteil entfernen.")
         self.connection_note_label.setText(f"Gespeichert in {result.sheet_name}!{result.cell}")
-        self._flash_logged_feedback()
+        self._set_logged_feedback_active(True)
         if committed_value is not None:
-            self._log(f"{committed_value:.3f} -> {result.sheet_name}!{result.cell} ({session.backend_display_name()})")
+            self._last_logged_value = committed_value
+            self._log(f"Messwert {committed_value:.3f} g wurde in {result.sheet_name}!{result.cell} geschrieben.")
         self._save_settings()
 
     def _build_scale_source(self, target_weight: float | None) -> ScaleSource:
@@ -1288,7 +1318,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.connection_setup_panel.setVisible(self.source_control_state == SOURCE_CONTROL_IDLE)
         self.active_source_panel.setVisible(self.source_control_state != SOURCE_CONTROL_IDLE)
         self.setup_panel.setVisible(show_setup_panel)
-        self.left_scroll.setMaximumWidth(580 if show_setup_panel else 520)
+        self.left_scroll.setMaximumWidth(520 if show_setup_panel else 470)
         self._refresh_source_controls()
         self._refresh_runtime_inputs()
 
@@ -1361,6 +1391,21 @@ class ScaleLoggerWindow(QMainWindow):
     def _refresh_logging_format_display(self) -> None:
         self.logging_format_value.setText(self.direction_combo.currentText() or "--")
 
+    def _clear_logged_feedback_if_value_changed(self, measured_value: float) -> None:
+        if self._last_logged_value is None:
+            return
+
+        tolerance = max(
+            self.capture_engine.settings.base_stability_tolerance,
+            self.capture_engine.effective_tolerance(),
+        )
+        if abs(measured_value - self._last_logged_value) <= tolerance:
+            return
+
+        self._last_logged_value = None
+        self._set_logged_feedback_active(False)
+        self._set_pending_value("--")
+
     def _ensure_gram_unit(self, unit_text: str) -> bool:
         normalized = unit_text.strip().upper()
         if normalized in {"G", "GR", "GM"}:
@@ -1389,10 +1434,12 @@ class ScaleLoggerWindow(QMainWindow):
         return False
 
     def _log(self, message: str) -> None:
-        self.log_view.appendPlainText(message)
+        self.log_view.appendPlainText(f"• {message}")
+        self.clear_log_button.setEnabled(True)
 
     def _clear_log_history(self) -> None:
         self.log_view.clear()
+        self.clear_log_button.setEnabled(False)
 
     def _load_settings(self) -> None:
         data = self.settings_store.load()
