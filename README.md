@@ -5,6 +5,17 @@ Die Anwendung liest den Datenstrom der Waage ein, erkennt stabile Messwerte und 
 
 Die App läuft lokal auf `macOS` und kann später als Windows-`.exe` für den Produktions-PC gebaut werden.
 
+## App-Icon
+
+Für die App liegt jetzt ein eigenes Icon-Set im Projekt:
+
+- `logo/fibionic_app_icon.svg`
+- `logo/fibionic_app_icon.ico`
+- `logo/fibionic_app_icon.icns`
+
+Beim normalen Start auf dem Mac wird das Icon direkt in die Qt-App geladen.  
+Für gebaute Bundles und `.exe`-Dateien wird es ebenfalls verwendet.
+
 ## Zweck der App
 
 Das Tool ist für einen einfachen Produktionsablauf gedacht:
@@ -65,6 +76,14 @@ Alternativ im Entwicklungsmodus:
 pip install -e .
 fibionic-scale
 ```
+
+### App-Icon am Mac testen
+
+```bash
+PYTHONPATH=src .venv/bin/python -m fibionic_scale_app
+```
+
+Danach solltest du das neue Icon in der laufenden App bzw. im Dock sehen.
 
 ## Bedienungsanleitung
 
@@ -222,13 +241,25 @@ Für den späteren Einsatz auf Windows:
 ```bash
 pip install -r requirements.txt
 pip install pyinstaller
-pyinstaller --noconfirm --windowed --name fibionic-gewichtslogging -F -p src src/fibionic_scale_app/__main__.py
+pyinstaller fibionic-gewichtslogging.spec
 ```
 
 Die fertige Datei liegt danach unter:
 
 ```text
 dist/fibionic-gewichtslogging.exe
+```
+
+Auf dem Mac kannst du mit derselben Spec-Datei auch ein `.app`-Bundle bauen:
+
+```bash
+pyinstaller fibionic-gewichtslogging.spec
+```
+
+Das Bundle liegt danach unter:
+
+```text
+dist/fibionic-gewichtslogging.app
 ```
 
 ## Tests

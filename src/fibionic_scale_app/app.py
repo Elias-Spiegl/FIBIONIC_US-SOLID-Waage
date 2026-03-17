@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QPainter, QPixmap
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
@@ -71,10 +71,35 @@ SOURCE_CONTROL_RUNNING = "running"
 SOURCE_CONTROL_PAUSED = "paused"
 
 
+def asset_root() -> Path:
+    if getattr(sys, "_MEIPASS", None):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parents[2]
+
+
+def logo_root() -> Path:
+    return asset_root() / "logo"
+
+
+def load_app_icon() -> QIcon:
+    candidates = [
+        logo_root() / "app-icon-png" / "fibionic_app_icon_1024.png",
+        logo_root() / "fibionic_app_icon.svg",
+        logo_root() / "Logo_Fibionic_4c.svg",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            icon = QIcon(str(candidate))
+            if not icon.isNull():
+                return icon
+    return QIcon()
+
+
 class ScaleLoggerWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("fibionic | Gewichtslogging")
+        self.setWindowIcon(load_app_icon())
         self.resize(1440, 900)
         self.setMinimumSize(1280, 800)
 
@@ -335,8 +360,7 @@ class ScaleLoggerWindow(QMainWindow):
         return panel
 
     def _build_header_mark(self) -> QWidget:
-        logo_root = Path(__file__).resolve().parents[2] / "logo"
-        pixmap = self._load_header_logo_pixmap(logo_root)
+        pixmap = self._load_header_logo_pixmap(logo_root())
         if pixmap is not None:
             logo_wrap = QWidget()
             logo_layout = QHBoxLayout(logo_wrap)
@@ -1545,6 +1569,7 @@ class ScaleLoggerWindow(QMainWindow):
 
 def main() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setWindowIcon(load_app_icon())
     window = ScaleLoggerWindow()
     window.show()
     app.exec()
