@@ -16,7 +16,7 @@ Das Tool ist für einen einfachen Produktionsablauf gedacht:
 
 Die App kümmert sich dabei um:
 
-- Verbindung zur Waage oder zur Simulation
+- Verbindung zur Waage
 - Stabilitätserkennung
 - Prüfung des Zielbereichs
 - Ermittlung der nächsten freien Excel-Zelle
@@ -68,15 +68,12 @@ fibionic-scale
 
 ## Bedienungsanleitung
 
-### 1. Quelle auswählen
+### 1. Quelle einrichten
 
-Im Bereich `Quelle` wählst du:
+Im Bereich `Quelle` arbeitet die App immer mit der echten Waage.
 
-- `Echte Waage`
-- oder `Simulation`
-
-Wenn eine echte Waage angeschlossen ist, sucht die App den seriellen Port automatisch.  
-Nur wenn nötig, kannst du den Port manuell auswählen.
+Wenn eine Waage angeschlossen ist, sucht die App den seriellen Port automatisch.  
+Wenn nötig, kannst du den Port manuell auswählen.
 
 ### 2. Excel-Ziel einstellen
 
@@ -180,34 +177,13 @@ Bei `Links nach rechts` entsprechend:
 - `Produktion!G12`
 - `Produktion!H12`
 
-## Simulation
-
-Die App kann vollständig ohne echte Hardware getestet werden.
-
-Verfügbare Simulationsprofile:
-
-- `Stable at target`
-- `Below target`
-- `Above target`
-- `Noisy / unstable`
-- `Step response`
-- `Random batches`
-
-Die Simulation verhält sich für die App wie eine echte Messquelle.  
-Damit kannst du testen:
-
-- Live-Werte
-- Stabilitätserkennung
-- Excel-Schreiben
-- Pause / Fortsetzen / Stopp
-
 ## Fehlermeldungen und typische Fälle
 
 ### Keine Waage gefunden
 
 Wenn keine Waage automatisch erkannt wird:
 
-- Port neu suchen
+- `Automatisch erkennen`
 - bei Bedarf `Port manuell wählen`
 - Verkabelung und USB-RS232-Adapter prüfen
 
@@ -268,7 +244,7 @@ PYTHONPATH=src python -m unittest discover -s tests
 ```text
 src/fibionic_scale_app/
   app.py            # Desktop-UI
-  serial_io.py      # echte Waage + Simulation
+  serial_io.py      # serielle Waagen-Anbindung
   parsing.py        # Parser für die Waagendaten
   stability.py      # Stabilitätslogik
   excel_writer.py   # Excel-Anbindung

@@ -37,19 +37,13 @@ from .excel_writer import (
 from .models import ExcelSettings, FLOW_DOWN, SerialSettings
 from .serial_io import (
     auto_detectable_serial_ports,
-    SIM_PROFILE_STABLE,
     SOURCE_MODE_SERIAL,
-    SOURCE_MODE_SIMULATION,
     ScaleSource,
     SerialScaleSource,
-    SimulatedScaleSource,
     StreamEvent,
     list_serial_ports,
     preferred_serial_port,
     verified_serial_port,
-    simulation_profile_label,
-    simulation_profile_options,
-    source_mode_options,
 )
 from .settings_store import SettingsStore
 from .stability import CaptureState, WeightCaptureEngine, build_capture_settings
@@ -191,12 +185,6 @@ class ScaleLoggerWindow(QMainWindow):
         setup_layout.setContentsMargins(0, 0, 0, 0)
         setup_layout.setSpacing(8)
 
-        self.source_mode_combo, source_shell = self._combo_field()
-        for value, label in source_mode_options():
-            self.source_mode_combo.addItem(label, value)
-        self.source_mode_combo.currentIndexChanged.connect(self._update_source_mode_ui)
-        setup_layout.addWidget(source_shell)
-
         self.serial_config_panel = QWidget()
         serial_layout = QGridLayout(self.serial_config_panel)
         serial_layout.setContentsMargins(0, 0, 0, 0)
@@ -218,27 +206,6 @@ class ScaleLoggerWindow(QMainWindow):
             self.manual_port_combo.lineEdit().setPlaceholderText("/dev/cu.usbserial-130")
         serial_layout.addWidget(self.manual_port_shell, 2, 0, 1, 2)
         setup_layout.addWidget(self.serial_config_panel)
-
-        self.simulation_config_panel = QWidget()
-        simulation_layout = QGridLayout(self.simulation_config_panel)
-        simulation_layout.setContentsMargins(0, 0, 0, 0)
-        simulation_layout.setHorizontalSpacing(8)
-        simulation_layout.setVerticalSpacing(6)
-
-        simulation_layout.addWidget(self._field_label("Simulationsprofil"), 0, 0)
-        self.simulation_profile_combo, simulation_shell = self._combo_field()
-        for value, label in simulation_profile_options():
-            self.simulation_profile_combo.addItem(label, value)
-        self.simulation_profile_combo.currentIndexChanged.connect(self._update_source_mode_ui)
-        simulation_layout.addWidget(simulation_shell, 1, 0)
-
-        self.simulation_hint_label = QLabel(
-            "Virtuelle Waage für App-, Stabilitäts- und Excel-Tests ohne echte Hardware."
-        )
-        self.simulation_hint_label.setObjectName("BodyCopy")
-        self.simulation_hint_label.setWordWrap(True)
-        simulation_layout.addWidget(self.simulation_hint_label, 2, 0)
-        setup_layout.addWidget(self.simulation_config_panel)
 
         layout.addWidget(self.connection_setup_panel)
 
@@ -890,7 +857,7 @@ class ScaleLoggerWindow(QMainWindow):
         if self.scale_source is None:
             self.active_source_value.setText(self._active_source_preview())
 
-        if self._selected_source_mode() != SOURCE_MODE_SERIAL or self.scale_source is not None:
+        if self.scale_source is not None:
             return
 
         if self.verified_port and not self.manual_port_override:
@@ -991,8 +958,7 @@ class ScaleLoggerWindow(QMainWindow):
         if self.scale_source and self.scale_source.is_alive():
             return
 
-        if self._selected_source_mode() == SOURCE_MODE_SERIAL:
-            self.refresh_ports()
+        self.refresh_ports()
 
         try:
             capture_settings = self._collect_capture_settings()
@@ -1141,11 +1107,6 @@ class ScaleLoggerWindow(QMainWindow):
             else:
                 self.pending_detail_label.setText("Warte auf Treffer")
 
-        if isinstance(self.scale_source, SimulatedScaleSource):
-            self.scale_source.update_target_weight(capture_settings.target_weight)
-            if self.paused:
-                self.scale_source.reset_cycle()
-
         self._save_settings()
 
     def _set_logged_feedback_active(self, active: bool) -> None:
@@ -1191,18 +1152,16 @@ class ScaleLoggerWindow(QMainWindow):
             self._set_stage("Fehler", event.message)
             self.connection_note_label.setText(event.message)
             self._log(f"Fehlermeldung: {event.message}")
-            if self._selected_source_mode() == SOURCE_MODE_SERIAL:
-                QMessageBox.critical(self, "Serielle Verbindung", event.message)
+            QMessageBox.critical(self, "Serielle Verbindung", event.message)
             return
 
         if event.kind == "stopped":
-            was_simulation = isinstance(self.scale_source, SimulatedScaleSource)
             self.scale_source = None
             self.paused = False
             self._set_source_control_state(SOURCE_CONTROL_IDLE)
             self._set_running_state(False)
             self.active_source_value.setText(self._active_source_preview())
-            self.connection_note_label.setText("Simulation gestoppt." if was_simulation else "Quelle gestoppt.")
+            self.connection_note_label.setText("Quelle gestoppt.")
             self._set_stage(
                 "Bereit zum Start",
                 "Die Einstellungen sind wieder sichtbar. Für die nächste Serie einfach erneut anschalten.",
@@ -1303,10 +1262,6 @@ class ScaleLoggerWindow(QMainWindow):
         self._save_settings()
 
     def _build_scale_source(self, target_weight: float | None) -> ScaleSource:
-        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
-            profile = self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE
-            return SimulatedScaleSource(profile=profile, target_weight=target_weight)
-
         return SerialScaleSource(self._collect_serial_settings())
 
     def _collect_serial_settings(self) -> SerialSettings:
@@ -1369,28 +1324,19 @@ class ScaleLoggerWindow(QMainWindow):
         self.target_range_value.setText(f"{lower:.2f} bis {upper:.2f} g")
 
     def _update_source_mode_ui(self) -> None:
-        mode = self._selected_source_mode()
-        is_simulation = mode == SOURCE_MODE_SIMULATION
-        self.serial_config_panel.setVisible(not is_simulation)
-        self.simulation_config_panel.setVisible(is_simulation)
+        self.serial_config_panel.setVisible(True)
 
-        if not is_simulation and self.scale_source is None:
+        if self.scale_source is None:
             self.refresh_ports()
 
         if self.scale_source is None:
             self.connection_note_label.setText(self._idle_connection_text())
             self.active_source_value.setText(self._active_source_preview())
-
-        if is_simulation:
-            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
-            self.simulation_hint_label.setText(
-                f"Virtuelle Waage aktiv. Profil: {profile}. Ideal für Live-Wert, Stabilität und Excel-Tests."
-            )
         self._refresh_logging_format_display()
         self._refresh_runtime_inputs()
 
     def _selected_source_mode(self) -> str:
-        return self.source_mode_combo.currentData() or SOURCE_MODE_SERIAL
+        return SOURCE_MODE_SERIAL
 
     def _selected_port(self) -> str:
         if self.manual_port_override:
@@ -1398,20 +1344,12 @@ class ScaleLoggerWindow(QMainWindow):
         return self.detected_port or self.manual_port_combo.currentText().strip()
 
     def _active_source_preview(self) -> str:
-        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
-            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
-            return f"SIMULATED_SCALE | {profile}"
         return self._selected_port() or "--"
 
     def _source_runtime_name(self, source: ScaleSource) -> str:
-        if isinstance(source, SimulatedScaleSource):
-            return f"Simulation ({simulation_profile_label(source.profile)})"
         return source.current_port_name
 
     def _idle_connection_text(self) -> str:
-        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
-            profile = simulation_profile_label(self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE)
-            return f"Simulation bereit: {profile}."
         if self.detected_port:
             return f"Waage bereit auf {self.detected_port}."
         return "Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen."
@@ -1429,12 +1367,6 @@ class ScaleLoggerWindow(QMainWindow):
         bounds = self.capture_engine.window_bounds()
         if bounds is None:
             return "Lege ein neues Bauteil auf."
-
-        if self._selected_source_mode() == SOURCE_MODE_SIMULATION:
-            return (
-                f"Simulation arbeitet im Bereich {bounds[0]:.2f} bis {bounds[1]:.2f} g. "
-                "Live-Wert und Stabilität können jetzt getestet werden."
-            )
         return f"Lege ein Bauteil im Bereich {bounds[0]:.2f} bis {bounds[1]:.2f} g auf."
 
     def _set_running_state(self, running: bool) -> None:
@@ -1573,16 +1505,6 @@ class ScaleLoggerWindow(QMainWindow):
                 self.direction_combo.setCurrentIndex(direction_index)
             return
 
-        source_mode = str(data.get("source_mode", SOURCE_MODE_SERIAL))
-        source_mode_index = self.source_mode_combo.findData(source_mode)
-        if source_mode_index >= 0:
-            self.source_mode_combo.setCurrentIndex(source_mode_index)
-
-        sim_profile = str(data.get("simulation_profile", SIM_PROFILE_STABLE))
-        sim_profile_index = self.simulation_profile_combo.findData(sim_profile)
-        if sim_profile_index >= 0:
-            self.simulation_profile_combo.setCurrentIndex(sim_profile_index)
-
         self.manual_port_override = bool(data.get("manual_port_override", False))
         self._saved_manual_port = str(data.get("manual_port", data.get("port", "")))
 
@@ -1602,8 +1524,6 @@ class ScaleLoggerWindow(QMainWindow):
     def _save_settings(self) -> None:
         self.settings_store.save(
             {
-                "source_mode": self._selected_source_mode(),
-                "simulation_profile": self.simulation_profile_combo.currentData() or SIM_PROFILE_STABLE,
                 "manual_port_override": self.manual_port_override,
                 "manual_port": self.manual_port_combo.currentText().strip(),
                 "target_weight": self.target_weight_edit.text().strip(),
