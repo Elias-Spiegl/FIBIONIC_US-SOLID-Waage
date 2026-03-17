@@ -243,8 +243,8 @@ class ScaleLoggerWindow(QMainWindow):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(6)
 
-        self.target_weight_edit = self._line_edit("12.50")
-        self.target_window_edit = self._line_edit("0.50")
+        self.target_weight_edit = self._line_edit("9")
+        self.target_window_edit = self._line_edit("1")
         self.target_weight_edit.textChanged.connect(self._refresh_target_range_display)
         self.target_window_edit.textChanged.connect(self._refresh_target_range_display)
         self.target_weight_edit.textChanged.connect(self._refresh_auto_capture_hint)
@@ -276,7 +276,7 @@ class ScaleLoggerWindow(QMainWindow):
 
         self.excel_path_edit = QLineEdit()
         self.excel_path_edit.setVisible(False)
-        self.excel_file_name_label = QLabel("")
+        self.excel_file_name_label = QLabel("Nicht ausgewählt")
         self.excel_file_name_label.setObjectName("InlineValue")
         self.excel_file_name_label.setWordWrap(True)
         layout.addWidget(self.excel_file_name_label, 0, 0, 1, 2)
@@ -291,9 +291,9 @@ class ScaleLoggerWindow(QMainWindow):
         excel_buttons_layout.addWidget(self.open_excel_button, 1)
         layout.addWidget(self.excel_buttons_row, 1, 0, 1, 2)
 
-        self.sheet_name_edit = self._line_edit("Messwerte")
+        self.sheet_name_edit = self._line_edit("empty")
         self.column_edit = self._line_edit("A")
-        self.start_row_edit = self._line_edit("2")
+        self.start_row_edit = self._line_edit("1")
         self.sheet_name_edit.editingFinished.connect(self._handle_excel_settings_changed)
         self.column_edit.editingFinished.connect(self._handle_excel_settings_changed)
         self.start_row_edit.editingFinished.connect(self._handle_excel_settings_changed)
@@ -1082,10 +1082,10 @@ class ScaleLoggerWindow(QMainWindow):
             self.excel_file_name_label.setText(file_name)
             self.excel_file_name_label.setToolTip(path_text)
         else:
-            self.excel_file_name_label.setText("")
+            self.excel_file_name_label.setText("Nicht ausgewählt")
             self.excel_file_name_label.setToolTip("")
 
-        self.excel_file_name_label.setVisible(has_file)
+        self.excel_file_name_label.setVisible(True)
         self.browse_excel_button.setVisible((not has_file) or allow_file_change)
         self.browse_excel_button.setText("Datei ändern" if has_file else "Datei auswählen")
         self.open_excel_button.setVisible(has_file)
@@ -1508,13 +1508,13 @@ class ScaleLoggerWindow(QMainWindow):
         self.manual_port_override = bool(data.get("manual_port_override", False))
         self._saved_manual_port = str(data.get("manual_port", data.get("port", "")))
 
-        self.target_weight_edit.setText(str(data.get("target_weight", "12.50")))
-        self.target_window_edit.setText(str(data.get("target_window", "0.50")))
+        self.target_weight_edit.setText(str(data.get("target_weight", "9")))
+        self.target_window_edit.setText(str(data.get("target_window", "1")))
 
         self.excel_path_edit.setText(str(data.get("excel_path", "")))
-        self.sheet_name_edit.setText(str(data.get("sheet_name", "Messwerte")))
+        self.sheet_name_edit.setText(str(data.get("sheet_name", "empty")))
         self.column_edit.setText(str(data.get("column", "A")))
-        self.start_row_edit.setText(str(data.get("start_row", "2")))
+        self.start_row_edit.setText(str(data.get("start_row", "1")))
 
         direction = str(data.get("direction", FLOW_DOWN))
         direction_index = self.direction_combo.findData(direction)
