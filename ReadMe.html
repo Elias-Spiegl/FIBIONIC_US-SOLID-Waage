@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>fibionic | README</title>
+    <style>
+      :root {
+        --yellow: #ffe800;
+        --turquoise: #44b6cd;
+        --black: #1d1d1d;
+        --dark-grey: #383838;
+        --light-grey: #e3e1e6;
+        --white: #ffffff;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Avenir Next LT Pro", "Segoe UI", sans-serif;
+        background: var(--light-grey);
+        color: var(--black);
+      }
+
+      .page {
+        max-width: 720px;
+        margin: 48px auto;
+        padding: 0 24px;
+      }
+
+      .card {
+        background: var(--white);
+        border: 1px solid rgba(68, 182, 205, 0.35);
+        border-radius: 18px;
+        padding: 28px;
+        box-shadow: 0 2px 10px rgba(29, 29, 29, 0.04);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 34px;
+        font-weight: 500;
+      }
+
+      p {
+        margin: 0 0 18px;
+        line-height: 1.5;
+        color: var(--dark-grey);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      a.button {
+        display: inline-block;
+        padding: 12px 18px;
+        border-radius: 12px;
+        border: 1px solid var(--turquoise);
+        color: var(--black);
+        background: var(--white);
+        text-decoration: none;
+        font-weight: 600;
+      }
+
+      a.button.primary {
+        background: var(--yellow);
+        border-color: #d7c400;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <h1>README</h1>
+        <p>
+          Diese Datei dient als einfacher HTML-Einstieg zur Projektdokumentation.
+          Lokal kannst du die Markdown-Datei direkt öffnen oder die README auf GitHub
+          in der formatierten Web-Ansicht ansehen.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="./README.md">Lokale README öffnen</a>
+          <a class="button" href="https://github.com/Elias-Spiegl/FIBIONIC_US-SOLID-Waage/blob/main/README.md">README auf GitHub öffnen</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
