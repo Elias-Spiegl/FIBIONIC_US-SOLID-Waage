@@ -100,12 +100,29 @@ def normalize_workbook_path(path_text: str) -> Path:
 
 def workbook_path_block_reason(path: Path) -> str | None:
     normalized = path.expanduser()
-    if sys.platform.startswith("win") and _looks_like_onedrive_path(normalized):
+    if _looks_like_onedrive_path(normalized):
         return (
-            "OneDrive-Dateien werden unter Windows im Logger nicht direkt unterstützt. "
+            "OneDrive-Dateien werden im Logger nicht direkt unterstützt. "
             "Bitte eine lokale Excel-Datei außerhalb von OneDrive verwenden und später synchronisieren."
         )
     return None
+
+
+def list_workbook_sheet_names(path_text: str) -> list[str]:
+    path = normalize_workbook_path(path_text)
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError(
+            "Das Paket 'openpyxl' fehlt. Bitte installiere zuerst die Projekt-Abhängigkeiten."
+        ) from exc
+
+    workbook = load_workbook(path, read_only=True)
+    try:
+        return list(workbook.sheetnames)
+    finally:
+        workbook.close()
 
 
 def _looks_like_onedrive_path(path: Path) -> bool:

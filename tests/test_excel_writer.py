@@ -14,6 +14,7 @@ from fibionic_scale_app.excel_writer import (
     LIVE_BACKEND,
     ExcelSession,
     LiveExcelUnavailableError,
+    list_workbook_sheet_names,
     workbook_path_block_reason,
 )
 from fibionic_scale_app.models import ExcelSettings, FLOW_RIGHT
@@ -103,6 +104,27 @@ class ExcelSessionTests(unittest.TestCase):
             self.assertEqual(result.backend, EXCEL_MODE_FILE)
             workbook.close()
 
+    def test_lists_sheet_names_from_existing_workbook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "messwerte.xlsx"
+            session = ExcelSession(
+                ExcelSettings(
+                    path=str(path),
+                    sheet_name="Produktion",
+                    column="A",
+                    start_row=1,
+                    mode=EXCEL_MODE_FILE,
+                )
+            )
+            session.write_value(1.0)
+
+            workbook = load_workbook(path)
+            workbook.create_sheet("Archiv")
+            workbook.save(path)
+            workbook.close()
+
+            self.assertEqual(list_workbook_sheet_names(str(path)), ["Produktion", "Archiv"])
+
     def test_live_backend_path_match_is_exact(self) -> None:
         class DummyBook:
             def __init__(self, fullname: str):
@@ -150,11 +172,10 @@ class ExcelSessionTests(unittest.TestCase):
 
             self.assertEqual(preferred, str(alias))
 
-    def test_windows_onedrive_path_is_blocked_with_clear_message(self) -> None:
+    def test_onedrive_path_is_blocked_with_clear_message(self) -> None:
         path = Path("C:/Users/test/OneDrive - fibionic/messwerte.xlsx")
 
-        with patch("fibionic_scale_app.excel_writer.sys.platform", "win32"):
-            reason = workbook_path_block_reason(path)
+        reason = workbook_path_block_reason(path)
 
         self.assertIsNotNone(reason)
         self.assertIn("OneDrive-Dateien", reason)

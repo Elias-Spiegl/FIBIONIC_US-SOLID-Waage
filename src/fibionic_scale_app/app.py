@@ -31,6 +31,7 @@ from .excel_writer import (
     EXCEL_MODE_AUTO,
     ExcelSession,
     build_cell_ref,
+    list_workbook_sheet_names,
     scan_direction_options,
     workbook_path_block_reason,
 )
@@ -316,14 +317,14 @@ class ScaleLoggerWindow(QMainWindow):
         excel_buttons_layout.addWidget(self.open_excel_button, 1)
         layout.addWidget(self.excel_buttons_row, 1, 0, 1, 2)
 
-        self.sheet_name_edit = self._line_edit("")
+        self.sheet_name_combo, sheet_name_shell = self._combo_field()
         self.column_edit = self._line_edit("A")
         self.start_row_edit = self._line_edit("1")
-        self.sheet_name_edit.editingFinished.connect(self._handle_excel_settings_changed)
+        self.sheet_name_combo.currentIndexChanged.connect(self._handle_excel_settings_changed)
         self.column_edit.editingFinished.connect(self._handle_excel_settings_changed)
         self.start_row_edit.editingFinished.connect(self._handle_excel_settings_changed)
 
-        self._add_form_pair(layout, 2, "Sheet", self.sheet_name_edit, "Spalte", self.column_edit)
+        self._add_form_pair(layout, 2, "Sheet", sheet_name_shell, "Spalte", self.column_edit)
 
         layout.addWidget(self._field_label("Zeile"), 4, 0)
         self.direction_combo, direction_shell = self._combo_field()
@@ -1086,6 +1087,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.excel_session = None
         if not self.excel_path_edit.text().strip():
             self._refresh_excel_file_ui()
+            self._load_workbook_sheet_options()
             self._set_next_cell("--")
             self._set_backend("Auto")
             self._refresh_logging_format_display()
@@ -1093,8 +1095,43 @@ class ScaleLoggerWindow(QMainWindow):
             return
 
         self._refresh_excel_file_ui()
+        self._load_workbook_sheet_options(preferred_name=self.sheet_name_combo.currentText().strip(), silent=True)
         self._refresh_excel_target(silent=True)
         self._save_settings()
+
+    def _load_workbook_sheet_options(self, preferred_name: str = "", silent: bool = False) -> None:
+        path_text = self.excel_path_edit.text().strip()
+        if not path_text:
+            self.sheet_name_combo.blockSignals(True)
+            self.sheet_name_combo.clear()
+            self.sheet_name_combo.blockSignals(False)
+            return
+
+        try:
+            sheet_names = list_workbook_sheet_names(path_text)
+        except Exception as exc:
+            self.sheet_name_combo.blockSignals(True)
+            self.sheet_name_combo.clear()
+            self.sheet_name_combo.blockSignals(False)
+            if not silent:
+                QMessageBox.warning(self, "Excel-Datei", str(exc))
+            return
+
+        if not sheet_names:
+            self.sheet_name_combo.blockSignals(True)
+            self.sheet_name_combo.clear()
+            self.sheet_name_combo.blockSignals(False)
+            return
+
+        desired_name = preferred_name.strip() or self.sheet_name_combo.currentText().strip()
+        if desired_name not in sheet_names:
+            desired_name = sheet_names[0]
+
+        self.sheet_name_combo.blockSignals(True)
+        self.sheet_name_combo.clear()
+        self.sheet_name_combo.addItems(sheet_names)
+        self.sheet_name_combo.setCurrentText(desired_name)
+        self.sheet_name_combo.blockSignals(False)
 
     def _refresh_excel_file_ui(self) -> None:
         path_text = self.excel_path_edit.text().strip()
@@ -1114,6 +1151,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.browse_excel_button.setText("Datei ändern" if has_file else "Datei auswählen")
         self.open_excel_button.setVisible(has_file)
         self.open_excel_button.setEnabled(has_file)
+        self.sheet_name_combo.setEnabled(has_file and allow_file_change)
 
     def _apply_runtime_target_changes(self) -> None:
         try:
@@ -1309,7 +1347,7 @@ class ScaleLoggerWindow(QMainWindow):
     def _collect_excel_settings(self) -> ExcelSettings:
         return ExcelSettings(
             path=self.excel_path_edit.text().strip(),
-            sheet_name=self.sheet_name_edit.text().strip() or "Messwerte",
+            sheet_name=self.sheet_name_combo.currentText().strip() or "Messwerte",
             column=self.column_edit.text().strip().upper() or "A",
             start_row=self._parse_int(self.start_row_edit.text(), "Zeile"),
             direction=self.direction_combo.currentData() or FLOW_DOWN,
@@ -1406,7 +1444,7 @@ class ScaleLoggerWindow(QMainWindow):
         allow_edit = self.source_control_state in {SOURCE_CONTROL_IDLE, SOURCE_CONTROL_PAUSED}
 
         for widget in (
-            self.sheet_name_edit,
+            self.sheet_name_combo,
         ):
             widget.setEnabled(allow_edit)
 
@@ -1536,7 +1574,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.target_window_edit.setText(str(data.get("target_window", "1")))
 
         self.excel_path_edit.setText(str(data.get("excel_path", "")))
-        self.sheet_name_edit.setText(str(data.get("sheet_name", "")))
+        self._load_workbook_sheet_options(str(data.get("sheet_name", "")), silent=True)
         self.column_edit.setText(str(data.get("column", "A")))
         self.start_row_edit.setText(str(data.get("start_row", "1")))
 
@@ -1553,7 +1591,7 @@ class ScaleLoggerWindow(QMainWindow):
                 "target_weight": self.target_weight_edit.text().strip(),
                 "target_window": self.target_window_edit.text().strip(),
                 "excel_path": self.excel_path_edit.text().strip(),
-                "sheet_name": self.sheet_name_edit.text().strip(),
+                "sheet_name": self.sheet_name_combo.currentText().strip(),
                 "column": self.column_edit.text().strip(),
                 "start_row": self.start_row_edit.text().strip(),
                 "direction": self.direction_combo.currentData() or FLOW_DOWN,
