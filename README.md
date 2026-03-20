@@ -70,6 +70,10 @@ pip install -r requirements.txt
 PYTHONPATH=src python -m fibionic_scale_app
 ```
 
+Hinweis fuer macOS:
+Bitte aktuell Python `3.13` fuer das venv verwenden.
+Mit Python `3.14` stuerzt die Kombination aus `PySide6 6.10.2` und Qt auf diesem Projektstand beim Start von `QApplication` ab.
+
 Alternativ im Entwicklungsmodus:
 
 ```bash
