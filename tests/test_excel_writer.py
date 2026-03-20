@@ -14,6 +14,7 @@ from fibionic_scale_app.excel_writer import (
     LIVE_BACKEND,
     ExcelSession,
     LiveExcelUnavailableError,
+    column_name_to_index,
     list_workbook_sheet_names,
     workbook_path_block_reason,
 )
@@ -22,6 +23,55 @@ from fibionic_scale_app.weight_precision import WEIGHT_NUMBER_FORMAT
 
 
 class ExcelSessionTests(unittest.TestCase):
+    class _DummyLastCell:
+        def __init__(self, row: int, column: int):
+            self.row = row
+            self.column = column
+
+    class _DummyUsedRange:
+        def __init__(self, row: int, column: int):
+            self.last_cell = ExcelSessionTests._DummyLastCell(row, column)
+
+    class _DummyRange:
+        def __init__(self, value):
+            self.value = value
+
+    class _DummyWorksheet:
+        def __init__(self, *, column_values=None, row_values=None, used_row: int = 1, used_column: int = 1):
+            self.column_values = dict(column_values or {})
+            self.row_values = dict(row_values or {})
+            self.used_range = ExcelSessionTests._DummyUsedRange(used_row, used_column)
+            self.range_calls: list[str] = []
+
+        def range(self, ref: str):
+            self.range_calls.append(ref)
+            start, end = ref.split(":")
+            if start[0].isalpha() and end[0].isalpha() and start[1:].isdigit() and end[1:].isdigit():
+                start_column = "".join(char for char in start if char.isalpha())
+                end_column = "".join(char for char in end if char.isalpha())
+                start_row = int("".join(char for char in start if char.isdigit()))
+                end_row = int("".join(char for char in end if char.isdigit()))
+
+                if start_column == end_column:
+                    values = [self.column_values.get(row) for row in range(start_row, end_row + 1)]
+                    if len(values) == 1:
+                        return ExcelSessionTests._DummyRange(values[0])
+                    return ExcelSessionTests._DummyRange(values)
+
+                if start_row == end_row:
+                    values = [
+                        self.row_values.get(column_index)
+                        for column_index in range(
+                            column_name_to_index(start_column),
+                            column_name_to_index(end_column) + 1,
+                        )
+                    ]
+                    if len(values) == 1:
+                        return ExcelSessionTests._DummyRange(values[0])
+                    return ExcelSessionTests._DummyRange(values)
+
+            raise AssertionError(f"Unerwartete Range-Abfrage: {ref}")
+
     def test_writes_value_to_first_empty_row_and_detects_next_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "messwerte.xlsx"
@@ -203,6 +253,44 @@ class ExcelSessionTests(unittest.TestCase):
 
         self.assertIsNotNone(reason)
         self.assertIn("OneDrive-Dateien", reason)
+
+    def test_live_backend_detects_next_empty_row_with_single_bulk_request(self) -> None:
+        worksheet = self._DummyWorksheet(
+            column_values={1: 10.0, 2: 11.0, 3: 12.0, 4: None, 5: 14.0},
+            used_row=5,
+            used_column=1,
+        )
+        settings = ExcelSettings(path="dummy.xlsx", sheet_name="Produktion", column="A", start_row=1, mode="live")
+
+        column, row = LIVE_BACKEND._detect_current_cell_fast(worksheet, settings)
+
+        self.assertEqual((column, row), ("A", 4))
+        self.assertEqual(worksheet.range_calls, ["A1:A5"])
+
+    def test_live_backend_detects_next_empty_column_with_single_bulk_request(self) -> None:
+        worksheet = self._DummyWorksheet(
+            row_values={
+                column_name_to_index("B"): 10.0,
+                column_name_to_index("C"): 11.0,
+                column_name_to_index("D"): None,
+                column_name_to_index("E"): 14.0,
+            },
+            used_row=4,
+            used_column=column_name_to_index("E"),
+        )
+        settings = ExcelSettings(
+            path="dummy.xlsx",
+            sheet_name="Produktion",
+            column="B",
+            start_row=4,
+            direction=FLOW_RIGHT,
+            mode="live",
+        )
+
+        column, row = LIVE_BACKEND._detect_current_cell_fast(worksheet, settings)
+
+        self.assertEqual((column, row), ("D", 4))
+        self.assertEqual(worksheet.range_calls, ["B4:E4"])
 
 
 if __name__ == "__main__":

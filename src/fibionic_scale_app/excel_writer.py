@@ -152,6 +152,29 @@ def build_cell_ref(column: str, row: int) -> str:
     return f"{normalize_column_name(column)}{max(1, int(row))}"
 
 
+def _is_empty_excel_value(value) -> bool:
+    return value in (None, "")
+
+
+def _flatten_linear_range_values(values) -> list[object]:
+    if isinstance(values, (list, tuple)):
+        flattened: list[object] = []
+        for item in values:
+            if isinstance(item, (list, tuple)):
+                flattened.extend(item)
+            else:
+                flattened.append(item)
+        return flattened
+    return [values]
+
+
+def _first_empty_offset(values) -> int | None:
+    for index, value in enumerate(values):
+        if _is_empty_excel_value(value):
+            return index
+    return None
+
+
 MAX_SCAN_STEPS = 10_000
 
 
@@ -278,21 +301,11 @@ class LiveExcelBackend:
 
     def detect_current_cell(self, settings: ExcelSettings) -> tuple[str, int]:
         _, worksheet, _ = self._open_workbook(settings)
-        return find_next_empty_position_with_getter(
-            lambda cell: worksheet.range(cell).value,
-            settings.column,
-            settings.start_row,
-            settings.direction,
-        )
+        return self._detect_current_cell_fast(worksheet, settings)
 
     def write_to_next_empty(self, settings: ExcelSettings, value: float) -> ExcelWriteResult:
         workbook, worksheet, path = self._open_workbook(settings)
-        column, row = find_next_empty_position_with_getter(
-            lambda cell: worksheet.range(cell).value,
-            settings.column,
-            settings.start_row,
-            settings.direction,
-        )
+        column, row = self._detect_current_cell_fast(worksheet, settings)
         cell = build_cell_ref(column, row)
         quantized_value = quantize_weight_value(value)
         cell_range = worksheet.range(cell)
@@ -334,6 +347,46 @@ class LiveExcelBackend:
             column=normalize_column_name(column),
             backend=self.key,
         )
+
+    def _detect_current_cell_fast(self, worksheet, settings: ExcelSettings) -> tuple[str, int]:
+        direction = normalize_scan_direction(settings.direction)
+        column = normalize_column_name(settings.column)
+        start_row = max(1, int(settings.start_row))
+
+        if direction == FLOW_DOWN:
+            return self._detect_next_empty_down(worksheet, column, start_row)
+        return self._detect_next_empty_right(worksheet, column, start_row)
+
+    def _detect_next_empty_down(self, worksheet, column: str, start_row: int) -> tuple[str, int]:
+        search_limit_row = start_row + MAX_SCAN_STEPS - 1
+        last_used_row = min(max(start_row, self._worksheet_last_used_row(worksheet)), search_limit_row)
+        values = _flatten_linear_range_values(worksheet.range(f"{column}{start_row}:{column}{last_used_row}").value)
+        empty_offset = _first_empty_offset(values)
+        if empty_offset is not None:
+            return column, start_row + empty_offset
+        if last_used_row >= search_limit_row:
+            raise RuntimeError(
+                f"Keine leere Zelle in Spalte {column} innerhalb von {MAX_SCAN_STEPS} Zeilen gefunden."
+            )
+        return column, last_used_row + 1
+
+    def _detect_next_empty_right(self, worksheet, column: str, row: int) -> tuple[str, int]:
+        start_column_index = column_name_to_index(column)
+        search_limit_column_index = start_column_index + MAX_SCAN_STEPS - 1
+        last_used_column_index = min(
+            max(start_column_index, self._worksheet_last_used_column_index(worksheet)),
+            search_limit_column_index,
+        )
+        end_column = index_to_column_name(last_used_column_index)
+        values = _flatten_linear_range_values(worksheet.range(f"{column}{row}:{end_column}{row}").value)
+        empty_offset = _first_empty_offset(values)
+        if empty_offset is not None:
+            return index_to_column_name(start_column_index + empty_offset), row
+        if last_used_column_index >= search_limit_column_index:
+            raise RuntimeError(
+                f"Keine leere Zelle in Zeile {row} innerhalb von {MAX_SCAN_STEPS} Spalten gefunden."
+            )
+        return index_to_column_name(last_used_column_index + 1), row
 
     def _open_workbook(self, settings: ExcelSettings):
         path = normalize_workbook_path(settings.path)
@@ -448,6 +501,20 @@ class LiveExcelBackend:
             return False
 
         return candidate == target
+
+    @staticmethod
+    def _worksheet_last_used_row(worksheet) -> int:
+        try:
+            return max(1, int(worksheet.used_range.last_cell.row or 1))
+        except Exception:
+            return 1
+
+    @staticmethod
+    def _worksheet_last_used_column_index(worksheet) -> int:
+        try:
+            return max(1, int(worksheet.used_range.last_cell.column or 1))
+        except Exception:
+            return 1
 
     @staticmethod
     def _import_xlwings():

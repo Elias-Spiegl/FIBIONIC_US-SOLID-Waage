@@ -76,6 +76,22 @@ SOURCE_CONTROL_RUNNING = "running"
 SOURCE_CONTROL_PAUSED = "paused"
 
 
+def ui_font_stack() -> str:
+    if sys.platform == "darwin":
+        return '"Avenir Next LT Pro", "Avenir Next", "Helvetica Neue", "Arial"'
+    if sys.platform.startswith("win"):
+        return '"Avenir Next LT Pro", "Segoe UI", "Arial"'
+    return '"Avenir Next LT Pro", "Avenir Next", "Noto Sans", "DejaVu Sans", "Arial"'
+
+
+def mono_font_stack() -> str:
+    if sys.platform == "darwin":
+        return '"Menlo", "Monaco", "Courier New"'
+    if sys.platform.startswith("win"):
+        return '"Cascadia Code", "Consolas", "Courier New"'
+    return '"DejaVu Sans Mono", "Liberation Mono", "Courier New"'
+
+
 def asset_root() -> Path:
     if getattr(sys, "_MEIPASS", None):
         return Path(sys._MEIPASS)
@@ -606,6 +622,8 @@ class ScaleLoggerWindow(QMainWindow):
         return button
 
     def _apply_styles(self) -> None:
+        base_font = ui_font_stack()
+        mono_font = mono_font_stack()
         self.setStyleSheet(
             f"""
             QMainWindow {{
@@ -613,7 +631,7 @@ class ScaleLoggerWindow(QMainWindow):
             }}
             QWidget {{
                 color: {COLORS["ink"]};
-                font-family: "Avenir Next LT Pro", "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+                font-family: {base_font};
                 font-size: 10pt;
             }}
             QScrollArea#LeftScroll {{
@@ -793,7 +811,7 @@ class ScaleLoggerWindow(QMainWindow):
                 color: {COLORS["accent_dark"]};
             }}
             QPlainTextEdit#LogView {{
-                font-family: "SF Mono", "Cascadia Code", monospace;
+                font-family: {mono_font};
                 background: #FCFDFE;
                 font-size: 9.8pt;
                 padding-top: 8px;
