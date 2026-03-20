@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import queue
 import random
-import re
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -10,7 +9,7 @@ from dataclasses import dataclass
 from time import monotonic
 
 from .models import Measurement, SerialSettings
-from .parsing import parse_scale_output
+from .parsing import EXPECTED_FRAME_PATTERN, parse_scale_output
 
 SOURCE_MODE_SERIAL = "serial"
 SOURCE_MODE_SIMULATION = "simulation"
@@ -26,7 +25,22 @@ DEFAULT_SIM_INTERVAL = 0.18
 DEFAULT_SIM_TARGET = 12.5
 DEFAULT_PROBE_TIMEOUT = 0.2
 DEFAULT_PROBE_WINDOW = 1.2
-EXPECTED_FRAME_PATTERN = re.compile(r"^[+-]\s*\d+(?:\.\d+)?\s*g$", re.IGNORECASE)
+
+
+@dataclass(frozen=True, slots=True)
+class SerialPortDescriptor:
+    device: str
+    name: str = ""
+    description: str = ""
+    hwid: str = ""
+    manufacturer: str = ""
+    product: str = ""
+    interface: str = ""
+    vid: int | None = None
+    pid: int | None = None
+
+
+SerialPortCandidate = str | SerialPortDescriptor
 
 
 @dataclass(slots=True)
@@ -69,36 +83,60 @@ def simulation_profile_label(profile: str) -> str:
     return dict(simulation_profile_options()).get(profile, "Stable at target")
 
 
-def list_serial_ports() -> list[str]:
+def list_serial_port_descriptors() -> list[SerialPortDescriptor]:
     try:
         from serial.tools import list_ports
     except ImportError:
         return []
 
-    return [port.device for port in list_ports.comports()]
+    ports: list[SerialPortDescriptor] = []
+    for port in list_ports.comports():
+        device = str(getattr(port, "device", "") or "").strip()
+        if not device:
+            continue
+        ports.append(
+            SerialPortDescriptor(
+                device=device,
+                name=str(getattr(port, "name", "") or ""),
+                description=str(getattr(port, "description", "") or ""),
+                hwid=str(getattr(port, "hwid", "") or ""),
+                manufacturer=str(getattr(port, "manufacturer", "") or ""),
+                product=str(getattr(port, "product", "") or ""),
+                interface=str(getattr(port, "interface", "") or ""),
+                vid=getattr(port, "vid", None),
+                pid=getattr(port, "pid", None),
+            )
+        )
+    return ports
 
 
-def preferred_serial_port(ports: list[str] | None = None) -> str | None:
-    candidates = ports if ports is not None else list_serial_ports()
+def list_serial_ports() -> list[str]:
+    return [port.device for port in list_serial_port_descriptors()]
+
+
+def preferred_serial_port(ports: list[SerialPortCandidate] | None = None) -> str | None:
+    candidates = ports if ports is not None else list_serial_port_descriptors()
     if not candidates:
         return None
 
-    return sorted(candidates, key=_serial_port_rank, reverse=True)[0]
+    return _port_device(sorted(candidates, key=_serial_port_rank, reverse=True)[0])
 
 
-def auto_detectable_serial_ports(ports: list[str] | None = None) -> list[str]:
-    candidates = ports if ports is not None else list_serial_ports()
-    return [device for device in candidates if _looks_like_usb_serial_port(device)]
+def auto_detectable_serial_ports(ports: list[SerialPortCandidate] | None = None) -> list[str]:
+    candidates = ports if ports is not None else list_serial_port_descriptors()
+    return [_port_device(device) for device in candidates if _looks_like_usb_serial_port(device)]
 
 
 def verified_serial_port(
-    ports: list[str] | None = None,
+    ports: list[SerialPortCandidate] | None = None,
     baudrate: int = 9600,
     timeout: float = DEFAULT_PROBE_TIMEOUT,
     probe_window: float = DEFAULT_PROBE_WINDOW,
 ) -> str | None:
-    candidates = auto_detectable_serial_ports(ports)
-    for device in sorted(candidates, key=_serial_port_rank, reverse=True):
+    candidates = ports if ports is not None else list_serial_port_descriptors()
+    detectable_ports = [port for port in candidates if _looks_like_usb_serial_port(port)]
+    for port in sorted(detectable_ports, key=_serial_port_rank, reverse=True):
+        device = _port_device(port)
         if probe_serial_port(device, baudrate=baudrate, timeout=timeout, probe_window=probe_window):
             return device
     return None
@@ -152,15 +190,89 @@ def _matches_expected_scale_format(measurement: Measurement) -> bool:
     return EXPECTED_FRAME_PATTERN.fullmatch(raw_text) is not None
 
 
-def _looks_like_usb_serial_port(device: str) -> bool:
-    lowered = device.strip().lower()
-    usb_markers = ("usbserial", "usbmodem", "ttyusb", "usb", "acm", "ftdi", "wch", "silab", "ch340")
+def serial_port_display_label(port: SerialPortDescriptor) -> str:
+    detail_parts: list[str] = []
+    description = port.description.strip()
+    manufacturer = port.manufacturer.strip()
+    product = port.product.strip()
+
+    if description and description.lower() != port.device.lower():
+        detail_parts.append(description)
+    elif product and product.lower() != port.device.lower():
+        detail_parts.append(product)
+
+    existing_text = " ".join(detail_parts).lower()
+    if manufacturer and manufacturer.lower() not in existing_text:
+        detail_parts.append(manufacturer)
+
+    if not detail_parts:
+        return port.device
+
+    return f"{port.device} - {' | '.join(detail_parts)}"
+
+
+def serial_port_detail_text(port: SerialPortDescriptor) -> str:
+    detail_parts = [part for part in [port.description, port.manufacturer, port.product, port.hwid] if part]
+    return " | ".join(detail_parts) or port.device
+
+
+def _port_device(port: SerialPortCandidate) -> str:
+    if isinstance(port, SerialPortDescriptor):
+        return port.device.strip()
+    return port.strip()
+
+
+def _port_search_text(port: SerialPortCandidate) -> str:
+    if isinstance(port, SerialPortDescriptor):
+        parts = [
+            port.device,
+            port.name,
+            port.description,
+            port.hwid,
+            port.manufacturer,
+            port.product,
+            port.interface,
+        ]
+        if port.vid is not None:
+            parts.append(f"{port.vid:04x}")
+        if port.pid is not None:
+            parts.append(f"{port.pid:04x}")
+        return " ".join(part.strip().lower() for part in parts if part)
+    return port.strip().lower()
+
+
+def _looks_like_usb_serial_port(device: SerialPortCandidate) -> bool:
+    lowered = _port_search_text(device)
+    bluetooth_markers = ("bluetooth", "incoming-port", "bthmodem", "standard serial over bluetooth")
+    if any(marker in lowered for marker in bluetooth_markers):
+        return False
+
+    usb_markers = (
+        "usbserial",
+        "usb serial",
+        "usb-serial",
+        "usbmodem",
+        "ttyusb",
+        "usb",
+        "acm",
+        "ftdi",
+        "wch",
+        "silab",
+        "silicon labs",
+        "ch340",
+        "ch341",
+        "cp210",
+        "cp210x",
+        "prolific",
+        "pl2303",
+    )
     return any(marker in lowered for marker in usb_markers)
 
 
-def _serial_port_rank(device: str) -> tuple[int, int, str]:
-    text = device.strip()
+def _serial_port_rank(device: SerialPortCandidate) -> tuple[int, int, str]:
+    text = _port_device(device)
     lowered = text.lower()
+    details = _port_search_text(device)
     score = 0
 
     if lowered.startswith("/dev/cu."):
@@ -169,10 +281,12 @@ def _serial_port_rank(device: str) -> tuple[int, int, str]:
         score += 10
     if lowered.startswith("com"):
         score += 30
-    if any(marker in lowered for marker in ("usbserial", "usbmodem", "wch", "silab", "ftdi", "ch340", "ttyusb", "acm")):
+    if any(marker in details for marker in ("usbserial", "usb serial", "usb-serial", "usbmodem", "wch", "silab", "silicon labs", "ftdi", "ch340", "ch341", "ttyusb", "acm", "cp210", "cp210x", "prolific", "pl2303")):
         score += 100
-    elif "usb" in lowered:
+    elif "usb" in details:
         score += 60
+    if any(marker in details for marker in ("bluetooth", "incoming-port", "bthmodem", "standard serial over bluetooth")):
+        score -= 120
 
     return score, -len(text), text
 

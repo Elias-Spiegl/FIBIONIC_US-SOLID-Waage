@@ -13,6 +13,7 @@ from fibionic_scale_app.serial_io import (
     SimulatedScaleSource,
     probe_serial_port,
     preferred_serial_port,
+    SerialPortDescriptor,
     verified_serial_port,
 )
 
@@ -25,6 +26,14 @@ class ScaleSourceTests(unittest.TestCase):
     def test_auto_detectable_serial_ports_excludes_bluetooth(self) -> None:
         ports = ["/dev/cu.Bluetooth-Incoming-Port", "/dev/cu.usbserial-130", "/dev/cu.debug"]
         self.assertEqual(auto_detectable_serial_ports(ports), ["/dev/cu.usbserial-130"])
+
+    def test_auto_detectable_serial_ports_uses_windows_port_metadata(self) -> None:
+        ports = [
+            SerialPortDescriptor(device="COM3", description="Standard Serial over Bluetooth link"),
+            SerialPortDescriptor(device="COM5", description="USB-SERIAL CH340", manufacturer="wch.cn"),
+        ]
+
+        self.assertEqual(auto_detectable_serial_ports(ports), ["COM5"])
 
     def test_simulated_source_emits_connected_and_measurements(self) -> None:
         source = SimulatedScaleSource(
@@ -68,6 +77,26 @@ class ScaleSourceTests(unittest.TestCase):
             )
 
         self.assertEqual(verified, "/dev/cu.usbserial-130")
+
+    def test_verified_serial_port_uses_windows_metadata_for_com_ports(self) -> None:
+        ports = [
+            SerialPortDescriptor(device="COM3", description="Communications Port"),
+            SerialPortDescriptor(device="COM5", description="USB Serial Port", manufacturer="FTDI"),
+        ]
+
+        with patch("fibionic_scale_app.serial_io.probe_serial_port") as probe:
+            probe.side_effect = lambda device, **_: device == "COM5"
+            verified = verified_serial_port(ports)
+
+        self.assertEqual(verified, "COM5")
+
+    def test_preferred_serial_port_prefers_windows_usb_adapter_metadata(self) -> None:
+        ports = [
+            SerialPortDescriptor(device="COM3", description="Communications Port"),
+            SerialPortDescriptor(device="COM5", description="USB Serial Port", manufacturer="FTDI"),
+        ]
+
+        self.assertEqual(preferred_serial_port(ports), "COM5")
 
     def test_probe_serial_port_accepts_expected_gram_frame(self) -> None:
         class DummySerial:

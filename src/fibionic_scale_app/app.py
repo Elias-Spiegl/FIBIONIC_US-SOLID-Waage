@@ -40,10 +40,13 @@ from .serial_io import (
     auto_detectable_serial_ports,
     SOURCE_MODE_SERIAL,
     ScaleSource,
+    SerialPortDescriptor,
     SerialScaleSource,
     StreamEvent,
-    list_serial_ports,
+    list_serial_port_descriptors,
     preferred_serial_port,
+    serial_port_detail_text,
+    serial_port_display_label,
     verified_serial_port,
 )
 from .settings_store import SettingsStore
@@ -109,6 +112,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.capture_engine = WeightCaptureEngine(build_capture_settings(12.5, 0.5))
         self.excel_session: ExcelSession | None = None
         self.available_ports: list[str] = []
+        self.available_port_details: list[SerialPortDescriptor] = []
         self.detected_port = ""
         self.verified_port = ""
         self.manual_port_override = False
@@ -229,7 +233,7 @@ class ScaleLoggerWindow(QMainWindow):
 
         self.manual_port_combo, self.manual_port_shell = self._combo_field(editable=True)
         if self.manual_port_combo.lineEdit() is not None:
-            self.manual_port_combo.lineEdit().setPlaceholderText("/dev/cu.usbserial-130")
+            self.manual_port_combo.lineEdit().setPlaceholderText(self._manual_port_placeholder())
         serial_layout.addWidget(self.manual_port_shell, 2, 0, 1, 2)
         setup_layout.addWidget(self.serial_config_panel)
 
@@ -854,13 +858,15 @@ class ScaleLoggerWindow(QMainWindow):
         )
 
     def refresh_ports(self) -> None:
-        manual_text = self._saved_manual_port or self.manual_port_combo.currentText().strip()
-        system_ports = sorted(list_serial_ports())
-        auto_ports = auto_detectable_serial_ports(system_ports)
+        manual_text = self._saved_manual_port or self._manual_port_value()
+        port_details = sorted(list_serial_port_descriptors(), key=lambda port: port.device.lower())
+        auto_port_devices = set(auto_detectable_serial_ports(port_details))
+        auto_port_details = [port for port in port_details if port.device in auto_port_devices]
 
-        self.available_ports = system_ports.copy()
-        self.verified_port = verified_serial_port(auto_ports) or ""
-        self.detected_port = self.verified_port or preferred_serial_port(auto_ports) or ""
+        self.available_port_details = port_details
+        self.available_ports = [port.device for port in port_details]
+        self.verified_port = verified_serial_port(port_details) or ""
+        self.detected_port = self.verified_port or preferred_serial_port(auto_port_details) or ""
         if self.verified_port:
             self.detected_port_label.setText(f"{self.verified_port} (verifiziert)")
         elif self.detected_port:
@@ -869,11 +875,14 @@ class ScaleLoggerWindow(QMainWindow):
             self.detected_port_label.setText("Keine Waage gefunden")
 
         self.manual_port_combo.clear()
-        self.manual_port_combo.addItems(self.available_ports)
+        for port in self.available_port_details:
+            self.manual_port_combo.addItem(serial_port_display_label(port), port.device)
+            index = self.manual_port_combo.count() - 1
+            self.manual_port_combo.setItemData(index, serial_port_detail_text(port), Qt.ItemDataRole.ToolTipRole)
         if manual_text:
-            self.manual_port_combo.setCurrentText(manual_text)
+            self._set_manual_port_combo_value(manual_text)
         elif self.detected_port:
-            self.manual_port_combo.setCurrentText(self.detected_port)
+            self._set_manual_port_combo_value(self.detected_port)
 
         self.auto_port_button.setVisible(True)
         self.manual_port_button.setVisible(True)
@@ -892,11 +901,22 @@ class ScaleLoggerWindow(QMainWindow):
                 "Port automatisch vorgeschlagen. Wenn nötig kannst du ihn manuell überschreiben."
             )
         elif not self.detected_port and not self.manual_port_override:
-            self.connection_note_label.setText("Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen.")
+            if sys.platform.startswith("win") and self.available_ports:
+                self.connection_note_label.setText(
+                    "Keine Waage automatisch erkannt. Bitte COM-Port manuell wählen oder direkt eingeben."
+                )
+            elif sys.platform.startswith("win"):
+                self.connection_note_label.setText(
+                    "Keine seriellen Ports gefunden. Bitte USB-/RS232-Adapter und Windows-Treiber prüfen."
+                )
+            else:
+                self.connection_note_label.setText(
+                    "Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen."
+                )
 
     def toggle_manual_port_selection(self) -> None:
         self.manual_port_override = True
-        self._saved_manual_port = self.manual_port_combo.currentText().strip()
+        self._saved_manual_port = self._manual_port_value()
         self.refresh_ports()
 
     def use_auto_port_selection(self) -> None:
@@ -1402,8 +1422,8 @@ class ScaleLoggerWindow(QMainWindow):
 
     def _selected_port(self) -> str:
         if self.manual_port_override:
-            return self.manual_port_combo.currentText().strip()
-        return self.detected_port or self.manual_port_combo.currentText().strip()
+            return self._manual_port_value()
+        return self.detected_port or self._manual_port_value()
 
     def _active_source_preview(self) -> str:
         return self._selected_port() or "--"
@@ -1587,7 +1607,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.settings_store.save(
             {
                 "manual_port_override": self.manual_port_override,
-                "manual_port": self.manual_port_combo.currentText().strip(),
+                "manual_port": self._manual_port_value(),
                 "target_weight": self.target_weight_edit.text().strip(),
                 "target_window": self.target_window_edit.text().strip(),
                 "excel_path": self.excel_path_edit.text().strip(),
@@ -1603,6 +1623,36 @@ class ScaleLoggerWindow(QMainWindow):
         if self.scale_source is not None:
             self.scale_source.stop()
         super().closeEvent(event)
+
+    def _manual_port_placeholder(self) -> str:
+        if sys.platform.startswith("win"):
+            return "z. B. COM5"
+        if sys.platform == "darwin":
+            return "/dev/cu.usbserial-130"
+        return "z. B. /dev/ttyUSB0"
+
+    def _manual_port_value(self) -> str:
+        text = self.manual_port_combo.currentText().strip()
+        index = self.manual_port_combo.currentIndex()
+        if index >= 0 and self.manual_port_combo.itemText(index).strip() == text:
+            device = self.manual_port_combo.itemData(index)
+            if isinstance(device, str) and device.strip():
+                return device.strip()
+        return text
+
+    def _set_manual_port_combo_value(self, port: str) -> None:
+        desired = port.strip()
+        if not desired:
+            return
+
+        normalized = desired.lower()
+        for index in range(self.manual_port_combo.count()):
+            device = self.manual_port_combo.itemData(index)
+            if isinstance(device, str) and device.strip().lower() == normalized:
+                self.manual_port_combo.setCurrentIndex(index)
+                return
+
+        self.manual_port_combo.setCurrentText(desired)
 
 
 def main() -> None:
