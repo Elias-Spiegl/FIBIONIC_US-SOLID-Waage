@@ -18,6 +18,7 @@ from fibionic_scale_app.excel_writer import (
     workbook_path_block_reason,
 )
 from fibionic_scale_app.models import ExcelSettings, FLOW_RIGHT
+from fibionic_scale_app.weight_precision import WEIGHT_NUMBER_FORMAT
 
 
 class ExcelSessionTests(unittest.TestCase):
@@ -40,9 +41,32 @@ class ExcelSessionTests(unittest.TestCase):
             workbook = load_workbook(path)
             worksheet = workbook["Produktion"]
             self.assertEqual(worksheet["F3"].value, 12.34)
+            self.assertEqual(worksheet["F3"].number_format, WEIGHT_NUMBER_FORMAT)
             self.assertEqual(result.cell, "F3")
             self.assertEqual(next_column, "F")
             self.assertEqual(next_row, 4)
+            workbook.close()
+
+    def test_rounds_written_values_to_two_decimals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "messwerte.xlsx"
+            session = ExcelSession(
+                ExcelSettings(
+                    path=str(path),
+                    sheet_name="Produktion",
+                    column="F",
+                    start_row=3,
+                    mode=EXCEL_MODE_FILE,
+                )
+            )
+
+            result = session.write_value(13.345)
+
+            workbook = load_workbook(path)
+            worksheet = workbook["Produktion"]
+            self.assertEqual(worksheet["F3"].value, 13.35)
+            self.assertEqual(worksheet["F3"].number_format, WEIGHT_NUMBER_FORMAT)
+            self.assertEqual(result.value, 13.35)
             workbook.close()
 
     def test_detects_first_empty_column_for_horizontal_mode(self) -> None:

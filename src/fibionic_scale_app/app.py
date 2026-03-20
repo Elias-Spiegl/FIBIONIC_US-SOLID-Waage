@@ -51,6 +51,7 @@ from .serial_io import (
 )
 from .settings_store import SettingsStore
 from .stability import CaptureState, WeightCaptureEngine, build_capture_settings
+from .weight_precision import format_weight_value, normalize_measurement
 
 COLORS = {
     "page": "#E3E1E6",
@@ -122,8 +123,10 @@ class ScaleLoggerWindow(QMainWindow):
         self._flash_widgets: tuple[QWidget, ...] = ()
         self.source_control_state = SOURCE_CONTROL_IDLE
         self._syncing_excel_cursor = False
+        self._syncing_manual_port_combo = False
         self._unit_error: str | None = None
         self._last_logged_value: float | None = None
+        self._auto_port_request_id = 0
 
         self._build_ui()
         self._refresh_source_controls()
@@ -234,6 +237,8 @@ class ScaleLoggerWindow(QMainWindow):
         self.manual_port_combo, self.manual_port_shell = self._combo_field(editable=True)
         if self.manual_port_combo.lineEdit() is not None:
             self.manual_port_combo.lineEdit().setPlaceholderText(self._manual_port_placeholder())
+        self.manual_port_combo.currentTextChanged.connect(self._handle_manual_port_selection_changed)
+        self.manual_port_combo.currentIndexChanged.connect(self._handle_manual_port_selection_changed)
         serial_layout.addWidget(self.manual_port_shell, 2, 0, 1, 2)
         setup_layout.addWidget(self.serial_config_panel)
 
@@ -858,7 +863,7 @@ class ScaleLoggerWindow(QMainWindow):
         )
 
     def refresh_ports(self) -> None:
-        manual_text = self._saved_manual_port or self._manual_port_value()
+        manual_text = self._selected_manual_port_or_saved()
         port_details = sorted(list_serial_port_descriptors(), key=lambda port: port.device.lower())
         auto_port_devices = set(auto_detectable_serial_ports(port_details))
         auto_port_details = [port for port in port_details if port.device in auto_port_devices]
@@ -867,26 +872,24 @@ class ScaleLoggerWindow(QMainWindow):
         self.available_ports = [port.device for port in port_details]
         self.verified_port = verified_serial_port(port_details) or ""
         self.detected_port = self.verified_port or preferred_serial_port(auto_port_details) or ""
-        if self.verified_port:
-            self.detected_port_label.setText(f"{self.verified_port} (verifiziert)")
-        elif self.detected_port:
-            self.detected_port_label.setText(f"{self.detected_port} (Vorschlag)")
-        else:
-            self.detected_port_label.setText("Keine Waage gefunden")
 
-        self.manual_port_combo.clear()
-        for port in self.available_port_details:
-            self.manual_port_combo.addItem(serial_port_display_label(port), port.device)
-            index = self.manual_port_combo.count() - 1
-            self.manual_port_combo.setItemData(index, serial_port_detail_text(port), Qt.ItemDataRole.ToolTipRole)
-        if manual_text:
-            self._set_manual_port_combo_value(manual_text)
-        elif self.detected_port:
-            self._set_manual_port_combo_value(self.detected_port)
+        self._syncing_manual_port_combo = True
+        self.manual_port_combo.blockSignals(True)
+        try:
+            self.manual_port_combo.clear()
+            for port in self.available_port_details:
+                self.manual_port_combo.addItem(serial_port_display_label(port), port.device)
+                index = self.manual_port_combo.count() - 1
+                self.manual_port_combo.setItemData(index, serial_port_detail_text(port), Qt.ItemDataRole.ToolTipRole)
+            if manual_text:
+                self._set_manual_port_combo_value(manual_text)
+            elif self.detected_port:
+                self._set_manual_port_combo_value(self.detected_port)
+        finally:
+            self.manual_port_combo.blockSignals(False)
+            self._syncing_manual_port_combo = False
 
-        self.auto_port_button.setVisible(True)
-        self.manual_port_button.setVisible(True)
-        self.manual_port_shell.setVisible(self.manual_port_override)
+        self._refresh_port_selection_widgets()
 
         if self.scale_source is None:
             self.active_source_value.setText(self._active_source_preview())
@@ -894,41 +897,32 @@ class ScaleLoggerWindow(QMainWindow):
         if self.scale_source is not None:
             return
 
-        if self.verified_port and not self.manual_port_override:
-            self.connection_note_label.setText("Waage automatisch erkannt und am Datenformat verifiziert.")
-        elif self.detected_port and not self.manual_port_override:
-            self.connection_note_label.setText(
-                "Port automatisch vorgeschlagen. Wenn nötig kannst du ihn manuell überschreiben."
-            )
-        elif not self.detected_port and not self.manual_port_override:
-            if sys.platform.startswith("win") and self.available_ports:
-                self.connection_note_label.setText(
-                    "Keine Waage automatisch erkannt. Bitte COM-Port manuell wählen oder direkt eingeben."
-                )
-            elif sys.platform.startswith("win"):
-                self.connection_note_label.setText(
-                    "Keine seriellen Ports gefunden. Bitte USB-/RS232-Adapter und Windows-Treiber prüfen."
-                )
-            else:
-                self.connection_note_label.setText(
-                    "Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen."
-                )
+        self.connection_note_label.setText(self._idle_connection_text())
 
     def toggle_manual_port_selection(self) -> None:
+        self._auto_port_request_id += 1
         self.manual_port_override = True
-        self._saved_manual_port = self._manual_port_value()
+        self._saved_manual_port = self._selected_manual_port_or_saved() or self.detected_port
         self.refresh_ports()
+        self._save_settings()
 
     def use_auto_port_selection(self) -> None:
+        self._auto_port_request_id += 1
+        request_id = self._auto_port_request_id
         self.detected_port_label.setText("Port der Waage wird gesucht ...")
         self.connection_note_label.setText("Suche nach einer angeschlossenen Waage ...")
         self.auto_port_button.setEnabled(False)
         self.manual_port_button.setEnabled(False)
+        self._saved_manual_port = self._selected_manual_port_or_saved()
         self.manual_port_override = False
+        self._refresh_port_selection_widgets()
+        self._save_settings()
         QApplication.processEvents()
-        QTimer.singleShot(1000, self._finish_auto_port_selection)
+        QTimer.singleShot(1000, lambda: self._finish_auto_port_selection(request_id))
 
-    def _finish_auto_port_selection(self) -> None:
+    def _finish_auto_port_selection(self, request_id: int | None = None) -> None:
+        if request_id is not None and request_id != self._auto_port_request_id:
+            return
         try:
             self.refresh_ports()
         finally:
@@ -1259,8 +1253,9 @@ class ScaleLoggerWindow(QMainWindow):
         if not self._ensure_gram_unit(measurement.unit):
             return
 
+        measurement = normalize_measurement(measurement)
         self._unit_error = None
-        self._set_live_weight(f"{measurement.value:.3f}", measurement.unit or "g")
+        self._set_live_weight(format_weight_value(measurement.value), measurement.unit or "g")
         self._clear_logged_feedback_if_value_changed(measurement.value)
 
         if self.paused:
@@ -1273,14 +1268,14 @@ class ScaleLoggerWindow(QMainWindow):
             self._log("Bauteil entfernt. Nächste Wägung ist bereit.")
 
         if state.new_candidate is not None:
-            self._log(f"Stabiler Messwert erkannt: {state.new_candidate:.3f} g")
+            self._log(f"Stabiler Messwert erkannt: {format_weight_value(state.new_candidate)} g")
 
         if self.capture_engine.peek_pending_capture() is not None:
             self._write_pending_capture(auto=True)
 
     def _update_capture_dashboard(self, state: CaptureState) -> None:
         if state.pending_capture is not None:
-            self._set_pending_value(f"{state.pending_capture:.3f}")
+            self._set_pending_value(format_weight_value(state.pending_capture))
 
         if state.pending_capture is not None:
             self.pending_detail_label.setText("Wird in Excel geschrieben")
@@ -1296,7 +1291,7 @@ class ScaleLoggerWindow(QMainWindow):
             if state.spread is None:
                 self.pending_detail_label.setText("Sammle Werte")
             else:
-                self.pending_detail_label.setText(f"Spread {state.spread:.3f} g")
+                self.pending_detail_label.setText(f"Spread {format_weight_value(state.spread)} g")
             self._set_stage(
                 "Gewicht stabilisiert sich",
                 f"Im Zielbereich. Automatik wartet auf {self.capture_engine.settings.stable_samples} ruhige Werte.",
@@ -1331,7 +1326,7 @@ class ScaleLoggerWindow(QMainWindow):
 
         self.last_excel_error = None
         committed_value = self.capture_engine.commit_pending_capture()
-        self._set_pending_value(f"{pending_value:.3f}")
+        self._set_pending_value(format_weight_value(pending_value))
         self.pending_detail_label.setText("Gespeichert")
         self._set_next_cell_position(next_column, next_row)
         self._set_backend(session.backend_display_name())
@@ -1340,7 +1335,9 @@ class ScaleLoggerWindow(QMainWindow):
         self._set_logged_feedback_active(True)
         if committed_value is not None:
             self._last_logged_value = committed_value
-            self._log(f"Messwert {committed_value:.3f} g wurde in {result.sheet_name}!{result.cell} geschrieben.")
+            self._log(
+                f"Messwert {format_weight_value(committed_value)} g wurde in {result.sheet_name}!{result.cell} geschrieben."
+            )
         self._save_settings()
 
     def _build_scale_source(self, target_weight: float | None) -> ScaleSource:
@@ -1432,6 +1429,11 @@ class ScaleLoggerWindow(QMainWindow):
         return source.current_port_name
 
     def _idle_connection_text(self) -> str:
+        manual_port = self._selected_manual_port_or_saved()
+        if self.manual_port_override:
+            if manual_port:
+                return f"Manuelle Portwahl aktiv. Verwende {manual_port}."
+            return "Manuelle Portwahl aktiv. Bitte Port auswählen oder direkt eingeben."
         if self.detected_port:
             return f"Waage bereit auf {self.detected_port}."
         return "Keine Waage gefunden. Bitte Waage anschließen oder den Port manuell auswählen."
@@ -1607,7 +1609,7 @@ class ScaleLoggerWindow(QMainWindow):
         self.settings_store.save(
             {
                 "manual_port_override": self.manual_port_override,
-                "manual_port": self._manual_port_value(),
+                "manual_port": self._selected_manual_port_or_saved(),
                 "target_weight": self.target_weight_edit.text().strip(),
                 "target_window": self.target_window_edit.text().strip(),
                 "excel_path": self.excel_path_edit.text().strip(),
@@ -1640,6 +1642,12 @@ class ScaleLoggerWindow(QMainWindow):
                 return device.strip()
         return text
 
+    def _selected_manual_port_or_saved(self) -> str:
+        current = self._manual_port_value()
+        if current:
+            return current
+        return self._saved_manual_port.strip()
+
     def _set_manual_port_combo_value(self, port: str) -> None:
         desired = port.strip()
         if not desired:
@@ -1653,6 +1661,37 @@ class ScaleLoggerWindow(QMainWindow):
                 return
 
         self.manual_port_combo.setCurrentText(desired)
+
+    def _refresh_port_selection_widgets(self) -> None:
+        manual_port = self._selected_manual_port_or_saved()
+        if self.manual_port_override:
+            if manual_port:
+                self.detected_port_label.setText(f"{manual_port} (manuell)")
+            else:
+                self.detected_port_label.setText("Manuelle Portwahl aktiv")
+        elif self.verified_port:
+            self.detected_port_label.setText(f"{self.verified_port} (verifiziert)")
+        elif self.detected_port:
+            self.detected_port_label.setText(f"{self.detected_port} (Vorschlag)")
+        else:
+            self.detected_port_label.setText("Keine Waage gefunden")
+
+        self.auto_port_button.setVisible(True)
+        self.manual_port_button.setVisible(True)
+        self.manual_port_shell.setVisible(self.manual_port_override)
+
+        if self.scale_source is None:
+            self.active_source_value.setText(self._active_source_preview())
+
+    def _handle_manual_port_selection_changed(self) -> None:
+        if self._syncing_manual_port_combo or not self.manual_port_override:
+            return
+
+        self._saved_manual_port = self._selected_manual_port_or_saved()
+        self._refresh_port_selection_widgets()
+        if self.scale_source is None:
+            self.connection_note_label.setText(self._idle_connection_text())
+        self._save_settings()
 
 
 def main() -> None:

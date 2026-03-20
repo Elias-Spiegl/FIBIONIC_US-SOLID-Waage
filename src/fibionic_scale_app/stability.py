@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from statistics import mean
 
 from .models import CaptureSettings, Measurement
+from .weight_precision import quantize_weight_value
 
 
 def build_capture_settings(target_weight: float, target_window: float) -> CaptureSettings:
@@ -94,15 +95,16 @@ class WeightCaptureEngine:
         return max(0.10, min(2.00, dynamic))
 
     def process(self, measurement: Measurement) -> CaptureState:
+        value = quantize_weight_value(measurement.value)
         rearm_threshold = self.effective_rearm_threshold()
         rearmed = False
-        if self.pending_capture is None and not self.armed and abs(measurement.value) <= rearm_threshold:
+        if self.pending_capture is None and not self.armed and abs(value) <= rearm_threshold:
             self.armed = True
             self.history.clear()
             rearmed = True
 
-        self.history.append(measurement.value)
-        within_target = self._matches_target(measurement.value)
+        self.history.append(value)
+        within_target = self._matches_target(value)
         stable = False
         spread: float | None = None
         new_candidate: float | None = None
@@ -116,7 +118,7 @@ class WeightCaptureEngine:
             stable = spread <= effective_tolerance
 
         if self.armed and self.pending_capture is None and stable and within_target:
-            new_candidate = round(mean(self.history), 3)
+            new_candidate = quantize_weight_value(mean(self.history))
             self.pending_capture = new_candidate
             self.armed = False
 

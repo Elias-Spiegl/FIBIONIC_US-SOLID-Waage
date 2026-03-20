@@ -59,6 +59,21 @@ class WeightCaptureEngineTests(unittest.TestCase):
         self.assertAlmostEqual(light.base_stability_tolerance, 0.025)
         self.assertAlmostEqual(heavy.base_stability_tolerance, 0.06)
 
+    def test_rounds_capture_candidate_to_two_decimals(self) -> None:
+        settings = build_capture_settings(13.35, 0.2)
+        engine = WeightCaptureEngine(settings)
+
+        state = None
+        values = [13.344, 13.345, 13.346, 13.344, 13.345, 13.346, 13.344, 13.345, 13.346, 13.345]
+        for value in values:
+            state = engine.process(self.measurement(value))
+
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertTrue(state.stable)
+        self.assertEqual(state.new_candidate, 13.35)
+        self.assertEqual(engine.peek_pending_capture(), 13.35)
+
 
 if __name__ == "__main__":
     unittest.main()

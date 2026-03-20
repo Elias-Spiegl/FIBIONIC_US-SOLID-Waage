@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import ExcelSettings, FLOW_DOWN, FLOW_RIGHT
+from .weight_precision import WEIGHT_NUMBER_FORMAT, quantize_weight_value
 
 EXCEL_MODE_AUTO = "auto"
 EXCEL_MODE_FILE = "file"
@@ -151,6 +152,9 @@ def build_cell_ref(column: str, row: int) -> str:
     return f"{normalize_column_name(column)}{max(1, int(row))}"
 
 
+MAX_SCAN_STEPS = 10_000
+
+
 def find_next_empty_position_with_getter(
     value_getter,
     column: str,
@@ -162,17 +166,23 @@ def find_next_empty_position_with_getter(
     row = max(1, int(start_row))
 
     if normalized_direction == FLOW_DOWN:
-        while True:
+        for _ in range(MAX_SCAN_STEPS):
             if value_getter(build_cell_ref(normalized_column, row)) in (None, ""):
                 return normalized_column, row
             row += 1
+        raise RuntimeError(
+            f"Keine leere Zelle in Spalte {normalized_column} innerhalb von {MAX_SCAN_STEPS} Zeilen gefunden."
+        )
 
     column_index = column_name_to_index(normalized_column)
-    while True:
+    for _ in range(MAX_SCAN_STEPS):
         current_column = index_to_column_name(column_index)
         if value_getter(build_cell_ref(current_column, row)) in (None, ""):
             return current_column, row
         column_index += 1
+    raise RuntimeError(
+        f"Keine leere Zelle in Zeile {row} innerhalb von {MAX_SCAN_STEPS} Spalten gefunden."
+    )
 
 
 class FileExcelBackend:
@@ -189,11 +199,18 @@ class FileExcelBackend:
         workbook.close()
         return column, row
 
-    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
+    def write_to_next_empty(self, settings: ExcelSettings, value: float) -> ExcelWriteResult:
         workbook, worksheet, path = self._open_workbook(settings)
+        column, row = find_next_empty_position_with_getter(
+            lambda cell: worksheet[cell].value,
+            settings.column,
+            settings.start_row,
+            settings.direction,
+        )
         cell = build_cell_ref(column, row)
-
-        worksheet[cell] = float(value)
+        quantized_value = quantize_weight_value(value)
+        worksheet[cell] = quantized_value
+        worksheet[cell].number_format = WEIGHT_NUMBER_FORMAT
         workbook.save(path)
         workbook.close()
 
@@ -201,7 +218,26 @@ class FileExcelBackend:
             path=path,
             sheet_name=worksheet.title,
             cell=cell,
-            value=float(value),
+            value=quantized_value,
+            row=max(1, int(row)),
+            column=normalize_column_name(column),
+            backend=self.key,
+        )
+
+    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
+        workbook, worksheet, path = self._open_workbook(settings)
+        cell = build_cell_ref(column, row)
+        quantized_value = quantize_weight_value(value)
+        worksheet[cell] = quantized_value
+        worksheet[cell].number_format = WEIGHT_NUMBER_FORMAT
+        workbook.save(path)
+        workbook.close()
+
+        return ExcelWriteResult(
+            path=path,
+            sheet_name=worksheet.title,
+            cell=cell,
+            value=quantized_value,
             row=max(1, int(row)),
             column=normalize_column_name(column),
             backend=self.key,
@@ -249,18 +285,51 @@ class LiveExcelBackend:
             settings.direction,
         )
 
-    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
+    def write_to_next_empty(self, settings: ExcelSettings, value: float) -> ExcelWriteResult:
         workbook, worksheet, path = self._open_workbook(settings)
+        column, row = find_next_empty_position_with_getter(
+            lambda cell: worksheet.range(cell).value,
+            settings.column,
+            settings.start_row,
+            settings.direction,
+        )
         cell = build_cell_ref(column, row)
-
-        worksheet.range(cell).value = float(value)
+        quantized_value = quantize_weight_value(value)
+        cell_range = worksheet.range(cell)
+        cell_range.value = quantized_value
+        try:
+            cell_range.number_format = WEIGHT_NUMBER_FORMAT
+        except Exception:
+            pass
         workbook.save()
 
         return ExcelWriteResult(
             path=path,
             sheet_name=worksheet.name,
             cell=cell,
-            value=float(value),
+            value=quantized_value,
+            row=max(1, int(row)),
+            column=normalize_column_name(column),
+            backend=self.key,
+        )
+
+    def write_value(self, settings: ExcelSettings, column: str, row: int, value: float) -> ExcelWriteResult:
+        workbook, worksheet, path = self._open_workbook(settings)
+        cell = build_cell_ref(column, row)
+        quantized_value = quantize_weight_value(value)
+        cell_range = worksheet.range(cell)
+        cell_range.value = quantized_value
+        try:
+            cell_range.number_format = WEIGHT_NUMBER_FORMAT
+        except Exception:
+            pass
+        workbook.save()
+
+        return ExcelWriteResult(
+            path=path,
+            sheet_name=worksheet.name,
+            cell=cell,
+            value=quantized_value,
             row=max(1, int(row)),
             column=normalize_column_name(column),
             backend=self.key,
@@ -418,8 +487,7 @@ class ExcelSession:
         return self._run_backend("detect_current_cell")
 
     def write_value(self, value: float) -> ExcelWriteResult:
-        column, row = self.detect_current_cell()
-        return self._run_backend("write_value", column, row, value)
+        return self._run_backend("write_to_next_empty", value)
 
     def _run_backend(self, method_name: str, *args):
         mode = normalize_excel_mode(self.settings.mode)
