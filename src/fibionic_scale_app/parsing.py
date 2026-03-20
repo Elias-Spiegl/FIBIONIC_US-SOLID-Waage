@@ -9,6 +9,10 @@ MEASUREMENT_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?P<sign>[+-])?\s*(?P<number>\d[\d\s]*(?:[.,]\d*)?)\s*(?P<unit>[A-Za-z]{0,3})"
 )
 
+EXPECTED_FRAME_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^[+-]\s*\d+(?:\.\d+)?\s*g$", re.IGNORECASE
+)
+
 
 def clean_raw_text(raw: str | bytes) -> str:
     if isinstance(raw, bytes):

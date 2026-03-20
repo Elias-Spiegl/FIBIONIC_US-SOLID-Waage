@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from fibionic_scale_app.parsing import parse_scale_output
+from fibionic_scale_app.parsing import EXPECTED_FRAME_PATTERN, parse_scale_output
 
 
 class ParseScaleOutputTests(unittest.TestCase):
@@ -24,6 +24,10 @@ class ParseScaleOutputTests(unittest.TestCase):
 
     def test_ignores_non_measurement_lines(self) -> None:
         self.assertIsNone(parse_scale_output("READY"))
+
+    def test_expected_frame_pattern_matches_verified_gram_frame(self) -> None:
+        self.assertIsNotNone(EXPECTED_FRAME_PATTERN.fullmatch("+    44.00g"))
+        self.assertIsNone(EXPECTED_FRAME_PATTERN.fullmatch("+    44.00kg"))
 
 
 if __name__ == "__main__":
